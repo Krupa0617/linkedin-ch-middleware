@@ -1,3 +1,7 @@
+old code 
+
+
+
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
@@ -206,6 +210,3 @@ app.post('/linkedin/publish', async (req, res) => {
 app.listen(PORT || 3000, () => {
   console.log(`🚀 Middleware running on port ${PORT || 3000}`);
 });
-
-const accessToken = tokenResponse.data.access_token;
-console.log('✅ NEW ACCESS TOKEN:', accessToken); // ← add this line
