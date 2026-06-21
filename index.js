@@ -259,12 +259,18 @@ async function uploadImageToLinkedIn(imageUrl, imageToken, accessToken, memberId
     });
 
     const imageBuffer = Buffer.from(imageResponse.data);
+    const imageContentType = imageResponse.headers['content-type'] || '';
     console.log('✅ Image downloaded:', imageBuffer.length, 'bytes');
-    console.log('✅ Image content type:', imageResponse.headers['content-type']);
+    console.log('✅ Image content type:', imageContentType);
 
     // Validate buffer is not empty
     if (imageBuffer.length === 0) {
       console.error('❌ Downloaded image buffer is empty!');
+      return null;
+    }
+
+    if (!imageContentType.startsWith('image/')) {
+      console.error('❌ Content Hub download did not return an image:', imageContentType);
       return null;
     }
 
@@ -273,19 +279,52 @@ async function uploadImageToLinkedIn(imageUrl, imageToken, accessToken, memberId
     await axios.put(uploadUrl, imageBuffer, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        'Content-Type': imageResponse.headers['content-type'] || 'image/png'
+        'Content-Type': imageContentType
       },
       maxContentLength: 20 * 1024 * 1024,
       timeout: 30000
     });
 
     console.log('✅ Image uploaded to LinkedIn successfully!');
+    await waitForLinkedInAsset(assetUrn, accessToken);
     return assetUrn;
 
   } catch (err) {
     console.error('❌ Image upload failed:', err.response?.status, err.response?.data || err.message);
     return null;
   }
+}
+
+async function waitForLinkedInAsset(assetUrn, accessToken) {
+  const encodedAssetUrn = encodeURIComponent(assetUrn);
+
+  for (let attempt = 1; attempt <= 10; attempt += 1) {
+    const response = await axios.get(
+      `https://api.linkedin.com/v2/assets/${encodedAssetUrn}`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'X-Restli-Protocol-Version': '2.0.0'
+        },
+        timeout: 10000
+      }
+    );
+
+    const status = response.data?.recipes?.[0]?.status || response.data?.status;
+    console.log(`LinkedIn asset status attempt ${attempt}:`, status || 'unknown');
+
+    if (!status || status === 'AVAILABLE' || status === 'READY') {
+      return true;
+    }
+
+    if (status === 'PROCESSING_FAILED' || status === 'FAILED') {
+      throw new Error(`LinkedIn image processing failed: ${status}`);
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 1500));
+  }
+
+  throw new Error('LinkedIn image was uploaded but did not become available in time');
 }
 
 // ─────────────────────────────────────────────
@@ -379,6 +418,7 @@ app.post('/linkedin/publish', async (req, res) => {
 
   try {
     let postBody;
+    let linkedInImageAssetUrn = null;
 
     if (imageUrl && imageToken) {
       // Post WITH image
@@ -386,6 +426,7 @@ app.post('/linkedin/publish', async (req, res) => {
       const assetUrn = await uploadImageToLinkedIn(imageUrl, imageToken, accessToken, memberId);
 
       if (assetUrn) {
+        linkedInImageAssetUrn = assetUrn;
         postBody = {
           author: `urn:li:person:${memberId}`,
           lifecycleState,
@@ -436,7 +477,8 @@ app.post('/linkedin/publish', async (req, res) => {
       success: true,
       postId: postResponse.data.id,
       postText: shareCommentary,
-      hasImage: !!(imageUrl && imageToken),
+      hasImage: !!linkedInImageAssetUrn,
+      imageAssetUrn: linkedInImageAssetUrn,
       message: 'Successfully published to LinkedIn'
     });
 
