@@ -144,8 +144,8 @@ async function getContentHubToken(contentHubBaseUrl) {
 
 // ─────────────────────────────────────────────
 // Helper: Get asset details from Content Hub API
-// Returns { title, publicUrl, allProperties, token }
-// ✅ FIXED: Enhanced property logging + token validation
+// Returns { title, publicUrl, allProperties, token, renditionInfo, socialCaption, approvedBy, approvalDate, mainFileWidth, mainFileHeight }
+// ✅ UPDATED: Extract images from Renditions + nested property examples
 // ─────────────────────────────────────────────
 async function getAssetDetails(assetId, contentHubBaseUrl) {
   try {
@@ -232,19 +232,58 @@ async function getAssetDetails(assetId, contentHubBaseUrl) {
       || entity?.identifier
       || null;
 
-    // Get image URL from _links
-    const links = entity?.['_links'] || {};
+    // ═══════════════════════════════════════════════════════════════
+    // ✅ UPDATED: Extract image URL from Renditions (NOT _links)
+    // ═══════════════════════════════════════════════════════════════
     let publicUrl = null;
+    let renditionInfo = null;
 
-    if (links['thumbnail']) {
-      publicUrl = links['thumbnail']?.href || null;
-    } else if (links['preview']) {
-      publicUrl = links['preview']?.href || null;
-    } else if (links['download']) {
-      publicUrl = links['download']?.href || null;
-    } else if (links['self']) {
-      // Try to get renditions from self link
-      publicUrl = null;
+    const renditions = entity?.properties?.Renditions;
+    
+    if (renditions && typeof renditions === 'object') {
+      console.log('📸 ═══════════════════════════════════════════');
+      console.log('📸 RENDITIONS FOUND:');
+      console.log(`📸 Available renditions: ${Object.keys(renditions).join(', ')}`);
+      
+      // Priority order for image selection
+      const renditionPriority = [
+        'preview',           // Best for LinkedIn (good quality)
+        'preview_download',  // Alternative preview
+        'thumbnail_cropped', // Cropped thumbnail
+        'bigthumbnail',      // Larger thumbnail
+        'thumbnail',         // Small thumbnail
+        'pdf'                // Last resort
+      ];
+
+      for (const renditionType of renditionPriority) {
+        const rendition = renditions[renditionType];
+        
+        if (rendition && rendition.locations && rendition.locations.local && rendition.status === 'completed') {
+          // ✅ NEW: Build proper Content Hub rendition URL
+          publicUrl = `${contentHubBaseUrl}/api/entities/${assetId}/renditions/${renditionType}/download`;
+          
+          renditionInfo = {
+            type: renditionType,
+            status: rendition.status || 'unknown',
+            properties: rendition.properties || {},
+            url: publicUrl
+          };
+
+          console.log(`📸 Using rendition: ${renditionType}`);
+          console.log(`📸   Status: ${rendition.status}`);
+          console.log(`📸   URL: ${publicUrl}`);
+          if (rendition.properties) {
+            console.log(`📸   Dimensions: ${rendition.properties.width}x${rendition.properties.height}`);
+            console.log(`📸   Content Type: ${rendition.properties.content_type}`);
+            console.log(`📸   File Size: ${rendition.properties.filesizebytes} bytes`);
+          }
+          break; // Use first available in priority order
+        }
+      }
+
+      console.log('📸 ═══════════════════════════════════════════\n');
+    } else {
+      console.log('⚠️  No renditions found in properties');
     }
 
     // Add token to image URL for authenticated access
@@ -254,14 +293,50 @@ async function getAssetDetails(assetId, contentHubBaseUrl) {
         : `${publicUrl}?X-Auth-Token=${token}`;
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // ✅ NEW: Example of accessing nested properties
+    // ═══════════════════════════════════════════════════════════════
+    console.log('💡 ═══════════════════════════════════════════');
+    console.log('💡 NESTED PROPERTY EXAMPLES:');
+    
+    // Simple property
+    const fileName = entity?.properties?.FileName;
+    console.log(`  ✓ Simple: FileName = "${fileName}"`);
+    
+    // Nested property (FileProperties.properties.colorspace)
+    const colorspace = entity?.properties?.FileProperties?.properties?.colorspace;
+    console.log(`  ✓ Nested: FileProperties.properties.colorspace = "${colorspace}"`);
+    
+    // Empty object property (SocialPostCaption)
+    const socialCaption = entity?.properties?.SocialPostCaption;
+    const hasSocialCaption = Object.keys(socialCaption || {}).length > 0;
+    console.log(`  ✓ Empty Object: SocialPostCaption = ${JSON.stringify(socialCaption)} (has value: ${hasSocialCaption})`);
+    
+    // Complex nested (MainFile.properties)
+    const mainFileWidth = entity?.properties?.MainFile?.properties?.width;
+    console.log(`  ✓ Complex: MainFile.properties.width = "${mainFileWidth}"`);
+    
+    // Approval info
+    const approvedBy = entity?.properties?.ApprovedBy;
+    const approvalDate = entity?.properties?.ApprovalDate;
+    console.log(`  ✓ Approval: ApprovedBy = "${approvedBy}" on ${approvalDate}`);
+    
+    console.log('💡 ═══════════════════════════════════════════\n');
+
     console.log('✅ Asset Title:', title);
-    console.log('✅ Asset Image URL:', publicUrl ? publicUrl.split('?')[0] : 'Not found - text only post');
+    console.log('✅ Asset Image URL:', publicUrl ? 'Found ✓' : 'Not found - text only post');
 
     return { 
       title, 
       publicUrl, 
       token,
-      allProperties: entity?.properties || {}
+      allProperties: entity?.properties || {},
+      renditionInfo,
+      socialCaption: socialCaption && Object.keys(socialCaption).length > 0 ? socialCaption['en-US'] || socialCaption : null,
+      approvedBy,
+      approvalDate,
+      mainFileWidth,
+      mainFileHeight: entity?.properties?.MainFile?.properties?.height
     };
 
   } catch (err) {
