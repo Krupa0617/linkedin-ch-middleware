@@ -289,7 +289,7 @@ async function uploadImageToLinkedIn(imageUrl, imageToken, accessToken, memberId
     });
 
     console.log('✅ Image uploaded to LinkedIn successfully!');
-    await waitForLinkedInAsset(assetUrn, accessToken);
+ //   await waitForLinkedInAsset(assetUrn, accessToken);
     return assetUrn;
 
   } catch (err) {
