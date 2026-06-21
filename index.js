@@ -276,10 +276,11 @@ async function uploadImageToLinkedIn(imageUrl, imageToken, accessToken, memberId
 
     // Step C: Upload to LinkedIn
     console.log('📤 Uploading to LinkedIn...');
-    await axios.put(uploadUrl, imageBuffer, {
+    console.log('📤 Uploading to LinkedIn...',uploadUrl);
+   await axios.put(uploadUrl, imageBuffer, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        'Content-Type': imageContentType
+       'Content-Type': imageContentType
       },
       maxContentLength: 20 * 1024 * 1024,
       timeout: 30000
