@@ -96,8 +96,6 @@ app.get('/auth/linkedin/callback', async (req, res) => {
 
 // ─────────────────────────────────────────────
 // Helper: Authenticate with Content Hub
-// Returns auth token string
-// ✅ FIXED: Properly extract token from response
 // ─────────────────────────────────────────────
 async function getContentHubToken(contentHubBaseUrl) {
   try {
@@ -108,65 +106,40 @@ async function getContentHubToken(contentHubBaseUrl) {
         user_name: CONTENT_HUB_USERNAME,
         password: CONTENT_HUB_PASSWORD
       },
-      {
-        headers: { 'Content-Type': 'application/json' }
-      }
+      { headers: { 'Content-Type': 'application/json' } }
     );
-    
-    // ✅ FIXED: Extract token correctly from various response formats
-    // Content Hub may return { token: "..." } or { access_token: "..." } or just the token string
-    const token = response.data.token 
-      || response.data.access_token 
+
+    const token = response.data.token
+      || response.data.access_token
       || response.data;
-    
-    // ✅ NEW: Validate token format
-    if (typeof token !== 'string') {
-      console.error('❌ Token extraction failed - not a string');
-      console.error('❌ Response data:', JSON.stringify(response.data));
+
+    if (typeof token !== 'string' || token.trim().length === 0) {
+      console.error('❌ Token extraction failed:', JSON.stringify(response.data));
       return null;
     }
 
-    if (token.trim().length === 0) {
-      console.error('❌ Token is empty string');
-      return null;
-    }
-
-    console.log('✅ Content Hub token obtained');
-    console.log('✅ Token length:', token.length, 'characters');
+    console.log('✅ Content Hub token obtained, length:', token.length);
     return token;
-    
+
   } catch (err) {
-    console.error('❌ Content Hub auth failed:', err.response?.status, err.response?.data || err.message);
-    console.error('❌ Full error details:', JSON.stringify(err.response?.data, null, 2));
+    console.error('❌ Content Hub auth failed:', err.response?.status, err.message);
     return null;
   }
 }
 
 // ─────────────────────────────────────────────
 // Helper: Get asset details from Content Hub API
-// Returns { title, publicUrl, allProperties, token, renditionInfo, socialCaption, approvedBy, approvalDate, mainFileWidth, mainFileHeight }
-// ✅ UPDATED: Extract images from Renditions + nested property examples
+// Returns { title, imageUrl, imageToken, socialCaption }
 // ─────────────────────────────────────────────
 async function getAssetDetails(assetId, contentHubBaseUrl) {
   try {
-    console.log(`🔍 Fetching asset details for ID: ${assetId} from ${contentHubBaseUrl}`);
+    console.log(`🔍 Fetching asset details for ID: ${assetId}`);
 
-    // Step 1: Get auth token
+    // Get auth token
     const token = await getContentHubToken(contentHubBaseUrl);
-    if (!token) {
-      console.error('❌ Could not get Content Hub token');
-      return { title: null, publicUrl: null, allProperties: {} };
-    }
+    if (!token) return { title: null, imageUrl: null, imageToken: null, socialCaption: null };
 
-    // ✅ NEW: Validate token is a string before using
-    if (typeof token !== 'string' || token.trim().length === 0) {
-      console.error('❌ Invalid token format or empty token');
-      return { title: null, publicUrl: null, allProperties: {} };
-    }
-
-    console.log('✅ Token validated - proceeding with asset fetch');
-
-    // Step 2: Fetch asset entity
+    // Fetch asset entity
     const response = await axios.get(
       `${contentHubBaseUrl}/api/entities/${assetId}`,
       {
@@ -178,205 +151,70 @@ async function getAssetDetails(assetId, contentHubBaseUrl) {
     );
 
     const entity = response.data;
-    console.log('✅ Asset entity fetched successfully');
+    const props = entity?.properties || {};
 
-    // ✅ NEW: Comprehensive property logging
-    console.log('\n📋 ═══════════════════════════════════════════');
-    console.log('📋 ALL ASSET PROPERTIES');
-    console.log('📋 ═══════════════════════════════════════════');
-    
-    if (entity?.properties) {
-      // Full JSON output
-      console.log('📋 Full Properties Object (JSON):');
-      console.log(JSON.stringify(entity.properties, null, 2));
-      
-      // Individual property breakdown
-      console.log('\n📋 Property Breakdown:');
-      const propertyKeys = Object.keys(entity.properties);
-      console.log(`📋 Total properties: ${propertyKeys.length}`);
-      
-      propertyKeys.forEach((key, index) => {
-        const value = entity.properties[key];
-        const valueType = typeof value;
-        console.log(`\n  ${index + 1}. ${key}`);
-        console.log(`     Type: ${valueType}`);
-        if (Array.isArray(value)) {
-          console.log(`     Is Array: true (length: ${value.length})`);
-          console.log(`     Value: ${JSON.stringify(value)}`);
-        } else if (typeof value === 'object' && value !== null) {
-          console.log(`     Is Object: true`);
-          console.log(`     Value: ${JSON.stringify(value, null, 2)}`);
-        } else {
-          console.log(`     Value: ${value}`);
-        }
-      });
-    } else {
-      console.log('📋 ⚠️  No properties found in entity');
+    console.log('✅ Asset fetched successfully');
+
+    // ── Get Title ──
+    const title = props.Title || props.FileName || entity?.identifier || null;
+    console.log('✅ Title:', title);
+
+    // ── Get SocialPostCaption ──
+    // SocialPostCaption is a multilingual field: { "en-US": "caption text" }
+    let socialCaption = null;
+    const rawCaption = props.SocialPostCaption;
+    if (rawCaption && typeof rawCaption === 'object') {
+      socialCaption = rawCaption['en-US']
+        || rawCaption['(Default)']
+        || Object.values(rawCaption)[0]
+        || null;
     }
-    
-    console.log('📋 ═══════════════════════════════════════════\n');
+    console.log('✅ SocialPostCaption:', socialCaption || '(empty)');
 
-    // ✅ NEW: Log complete entity structure
-    console.log('📋 ENTITY STRUCTURE:');
-    const entityKeys = Object.keys(entity);
-    console.log(`📋 Entity has ${entityKeys.length} top-level fields:`);
-    entityKeys.forEach((key, index) => {
-      console.log(`  ${index + 1}. ${key}: ${typeof entity[key]}`);
-    });
-    console.log('');
+    // ── Get Image URL from Renditions ──
+    let imageUrl = null;
+    const renditions = props.Renditions;
 
-    // Get title from properties
-    const title = entity?.properties?.Title
-      || entity?.properties?.FileName
-      || entity?.properties?.Name
-      || entity?.identifier
-      || null;
-
-    // ═══════════════════════════════════════════════════════════════
-    // ✅ UPDATED: Extract image URL from Renditions (NOT _links)
-    // ═══════════════════════════════════════════════════════════════
-    let publicUrl = null;
-    let renditionInfo = null;
-
-    const renditions = entity?.properties?.Renditions;
-    
     if (renditions && typeof renditions === 'object') {
-      console.log('📸 ═══════════════════════════════════════════');
-      console.log('📸 RENDITIONS FOUND:');
-      console.log(`📸 Available renditions: ${Object.keys(renditions).join(', ')}`);
-      
-      // Priority order for image selection
-      const renditionPriority = [
-        'preview',           // Best for LinkedIn (good quality)
-        'preview_download',  // Alternative preview
-        'thumbnail_cropped', // Cropped thumbnail
-        'bigthumbnail',      // Larger thumbnail
-        'thumbnail',         // Small thumbnail
-        'pdf'                // Last resort
-      ];
+      // Priority: preview > bigthumbnail > thumbnail_cropped > thumbnail
+      const priority = ['preview', 'preview_download', 'bigthumbnail', 'thumbnail_cropped', 'thumbnail'];
 
-      for (const renditionType of renditionPriority) {
-        const rendition = renditions[renditionType];
-        
-        if (rendition && rendition.locations && rendition.locations.local && rendition.status === 'completed') {
-          // ✅ NEW: Build proper Content Hub rendition URL
-          publicUrl = `${contentHubBaseUrl}/api/entities/${assetId}/renditions/${renditionType}/download`;
-          
-          renditionInfo = {
-            type: renditionType,
-            status: rendition.status || 'unknown',
-            properties: rendition.properties || {},
-            url: publicUrl
-          };
-
-          console.log(`📸 Using rendition: ${renditionType}`);
-          console.log(`📸   Status: ${rendition.status}`);
-          console.log(`📸   URL: ${publicUrl}`);
-          if (rendition.properties) {
-            console.log(`📸   Dimensions: ${rendition.properties.width}x${rendition.properties.height}`);
-            console.log(`📸   Content Type: ${rendition.properties.content_type}`);
-            console.log(`📸   File Size: ${rendition.properties.filesizebytes} bytes`);
+      for (const type of priority) {
+        const r = renditions[type];
+        if (r && r.status === 'completed' && r.locations?.local?.length > 0) {
+          // Content type must be an image
+          const contentType = r.properties?.content_type || '';
+          if (contentType.startsWith('image/')) {
+            imageUrl = `${contentHubBaseUrl}/api/entities/${assetId}/renditions/${type}/download`;
+            console.log(`✅ Image rendition selected: ${type} (${r.properties?.width}x${r.properties?.height}, ${contentType})`);
+            break;
           }
-          break; // Use first available in priority order
         }
       }
-
-      console.log('📸 ═══════════════════════════════════════════\n');
-    } else {
-      console.log('⚠️  No renditions found in properties');
     }
 
-    // Add token to image URL for authenticated access
-    if (publicUrl && token) {
-      publicUrl = publicUrl.includes('?')
-        ? `${publicUrl}&X-Auth-Token=${token}`
-        : `${publicUrl}?X-Auth-Token=${token}`;
+    if (!imageUrl) {
+      console.log('⚠️ No suitable image rendition found');
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // ✅ NEW: Example of accessing nested properties
-    // ═══════════════════════════════════════════════════════════════
-    console.log('💡 ═══════════════════════════════════════════');
-    console.log('💡 NESTED PROPERTY EXAMPLES:');
-    
-    // Simple property
-    const fileName = entity?.properties?.FileName;
-    console.log(`  ✓ Simple: FileName = "${fileName}"`);
-    
-    // Nested property (FileProperties.properties.colorspace)
-    const colorspace = entity?.properties?.FileProperties?.properties?.colorspace;
-    console.log(`  ✓ Nested: FileProperties.properties.colorspace = "${colorspace}"`);
-    
-    // Empty object property (SocialPostCaption)
-    const socialCaption = entity?.properties?.SocialPostCaption;
-    const hasSocialCaption = Object.keys(socialCaption || {}).length > 0;
-    console.log(`  ✓ Empty Object: SocialPostCaption = ${JSON.stringify(socialCaption)} (has value: ${hasSocialCaption})`);
-    
-    // Complex nested (MainFile.properties)
-    const mainFileWidth = entity?.properties?.MainFile?.properties?.width;
-    console.log(`  ✓ Complex: MainFile.properties.width = "${mainFileWidth}"`);
-    
-    // Approval info
-    const approvedBy = entity?.properties?.ApprovedBy;
-    const approvalDate = entity?.properties?.ApprovalDate;
-    console.log(`  ✓ Approval: ApprovedBy = "${approvedBy}" on ${approvalDate}`);
-    
-    console.log('💡 ═══════════════════════════════════════════\n');
-
-    console.log('✅ Asset Title:', title);
-    console.log('✅ Asset Image URL:', publicUrl ? 'Found ✓' : 'Not found - text only post');
-
-    return { 
-      title, 
-      publicUrl, 
-      token,
-      allProperties: entity?.properties || {},
-      renditionInfo,
-      socialCaption: socialCaption && Object.keys(socialCaption).length > 0 ? socialCaption['en-US'] || socialCaption : null,
-      approvedBy,
-      approvalDate,
-      mainFileWidth,
-      mainFileHeight: entity?.properties?.MainFile?.properties?.height
-    };
+    return { title, imageUrl, imageToken: token, socialCaption };
 
   } catch (err) {
-    console.error('\n❌ Failed to fetch asset from Content Hub');
-    console.error('❌ Error Status:', err.response?.status);
-    console.error('❌ Error Message:', err.message);
-    
-    if (err.response?.data) {
-      console.error('❌ Error Data:', JSON.stringify(err.response.data, null, 2));
-    }
-
-    // ✅ NEW: Enhanced troubleshooting for 401 error
-    if (err.response?.status === 401) {
-      console.error('\n⚠️  401 UNAUTHORIZED - Troubleshooting Steps:');
-      console.error('   1. ❓ Verify CONTENT_HUB_USERNAME is correct');
-      console.error('   2. ❓ Verify CONTENT_HUB_PASSWORD is correct');
-      console.error('   3. ❓ Check if user has permissions to access asset ID:', assetId);
-      console.error('   4. ❓ Verify asset ID exists in Content Hub');
-      console.error('   5. ❓ Check if Content Hub API token is valid/not expired');
-      console.error('   6. ❓ Ensure X-Auth-Token header is correctly formatted');
-    }
-
-    return { 
-      title: null, 
-      publicUrl: null, 
-      token: null,
-      allProperties: {}
-    };
+    console.error('❌ Failed to fetch asset:', err.response?.status, err.message);
+    return { title: null, imageUrl: null, imageToken: null, socialCaption: null };
   }
 }
 
 // ─────────────────────────────────────────────
 // Helper: Upload image to LinkedIn
-// Returns LinkedIn asset URN or null
+// ✅ FIXED: Pass token for authenticated image download
 // ─────────────────────────────────────────────
-async function uploadImageToLinkedIn(imageUrl, accessToken, memberId) {
+async function uploadImageToLinkedIn(imageUrl, imageToken, accessToken, memberId) {
   try {
-    console.log('🖼️ Starting image upload to LinkedIn...');
+    console.log('🖼️ Starting LinkedIn image upload...');
+    console.log('🖼️ Image URL:', imageUrl);
 
-    // Step A: Register image upload with LinkedIn
+    // Step A: Register upload with LinkedIn
     const registerResponse = await axios.post(
       'https://api.linkedin.com/v2/assets?action=registerUpload',
       {
@@ -406,35 +244,52 @@ async function uploadImageToLinkedIn(imageUrl, accessToken, memberId) {
     const assetUrn = registerResponse.data.value.asset;
 
     console.log('✅ LinkedIn upload URL obtained');
-    console.log('✅ Asset URN:', assetUrn);
+    console.log('✅ LinkedIn Asset URN:', assetUrn);
 
-    // Step B: Download image from Content Hub
+    // Step B: Download image from Content Hub WITH auth token
+    console.log('📥 Downloading image from Content Hub...');
     const imageResponse = await axios.get(imageUrl, {
-      responseType: 'arraybuffer'
+      responseType: 'arraybuffer',
+      headers: {
+        // ✅ FIXED: Include auth token to download image
+        'X-Auth-Token': imageToken
+      },
+      maxContentLength: 20 * 1024 * 1024, // 20MB max
+      timeout: 30000
     });
 
     const imageBuffer = Buffer.from(imageResponse.data);
-    console.log('✅ Image downloaded, size:', imageBuffer.length, 'bytes');
+    console.log('✅ Image downloaded:', imageBuffer.length, 'bytes');
+    console.log('✅ Image content type:', imageResponse.headers['content-type']);
 
-    // Step C: Upload image binary to LinkedIn
+    // Validate buffer is not empty
+    if (imageBuffer.length === 0) {
+      console.error('❌ Downloaded image buffer is empty!');
+      return null;
+    }
+
+    // Step C: Upload to LinkedIn
+    console.log('📤 Uploading to LinkedIn...');
     await axios.put(uploadUrl, imageBuffer, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/octet-stream'
-      }
+        'Content-Type': imageResponse.headers['content-type'] || 'image/png'
+      },
+      maxContentLength: 20 * 1024 * 1024,
+      timeout: 30000
     });
 
     console.log('✅ Image uploaded to LinkedIn successfully!');
     return assetUrn;
 
   } catch (err) {
-    console.error('❌ Image upload to LinkedIn failed:', err.response?.data || err.message);
+    console.error('❌ Image upload failed:', err.response?.status, err.response?.data || err.message);
     return null;
   }
 }
 
 // ─────────────────────────────────────────────
-// Helper: Build text-only post body
+// Helper: Build text-only post
 // ─────────────────────────────────────────────
 function buildTextOnlyPost(memberId, shareCommentary, lifecycleState, visibility) {
   return {
@@ -452,21 +307,17 @@ function buildTextOnlyPost(memberId, shareCommentary, lifecycleState, visibility
   };
 }
 
-// ─────────────────────────────────────────────
-// Handle GET on /linkedin/publish for test connection
-// ─────────────────────────────────────────────
+// GET handler for test connection
 app.get('/linkedin/publish', (req, res) => {
   res.json({ status: '✅ LinkedIn publish endpoint is ready. Use POST to publish.' });
 });
 
 // ─────────────────────────────────────────────
 // STEP 3: Publish content to LinkedIn
-// Called by Content Hub Trigger/Action
 // ─────────────────────────────────────────────
 app.post('/linkedin/publish', async (req, res) => {
 
   console.log('📢 Incoming publish request from Content Hub');
-  console.log('Headers:', JSON.stringify(req.headers));
   console.log('Body:', JSON.stringify(req.body));
 
   // Security check
@@ -482,67 +333,57 @@ app.post('/linkedin/publish', async (req, res) => {
   if (!accessToken) return res.status(500).json({ error: 'LINKEDIN_ACCESS_TOKEN not configured' });
   if (!memberId) return res.status(500).json({ error: 'LINKEDIN_MEMBER_ID not configured' });
 
-  // ─────────────────────────────────────────
-  // Read data from Content Hub request
-  // Data comes inside "context" object
-  // ─────────────────────────────────────────
+  // Read context from Content Hub
   const context = req.body.context || {};
   const saveMsg = req.body.saveEntityMessage || {};
 
-  // Get asset ID and source system from headers
   const assetId = req.headers['target_id'] || saveMsg.TargetId;
   const sourceSystem = req.headers['source_system'] || CONTENT_HUB_URL;
-
-  // Get lifecycle values from context
   const lifecycleState = context.lifecycleState || 'PUBLISHED';
   const visibility = context.visibility || 'PUBLIC';
 
   console.log('✅ Asset ID:', assetId);
   console.log('✅ Source System:', sourceSystem);
 
-  // ─────────────────────────────────────────
-  // Fetch real asset details from Content Hub
-  // ─────────────────────────────────────────
+  // Fetch asset details from Content Hub
   let shareCommentary = context.shareCommentary || null;
   let imageUrl = null;
-  let allAssetProperties = {};
+  let imageToken = null;
 
   if (assetId && sourceSystem && CONTENT_HUB_USERNAME && CONTENT_HUB_PASSWORD) {
-    console.log('🔍 Fetching asset details from Content Hub API...');
     const assetDetails = await getAssetDetails(assetId, sourceSystem);
 
-    // ✅ NEW: Store all properties for flexible use
-    allAssetProperties = assetDetails.allProperties || {};
-
-    // Use fetched title if token not resolved
-    if (!shareCommentary || shareCommentary === '{Title}' || shareCommentary.trim() === '') {
+    // ── Build post text ──
+    // Priority: SocialPostCaption > Title from context > Title from API
+    if (assetDetails.socialCaption) {
+      // Use SocialPostCaption if filled in Content Hub
+      shareCommentary = assetDetails.socialCaption;
+      console.log('✅ Using SocialPostCaption for post text');
+    } else if (!shareCommentary || shareCommentary === '{Title}') {
+      // Fall back to title
       shareCommentary = assetDetails.title;
+      console.log('✅ Using Title for post text');
     }
 
-    // Use fetched image URL
-    imageUrl = assetDetails.publicUrl || null;
-  } else {
-    console.log('⚠️ Skipping asset fetch - missing credentials or asset ID');
-    if (!CONTENT_HUB_USERNAME) console.log('❌ CONTENT_HUB_USERNAME not set');
-    if (!CONTENT_HUB_PASSWORD) console.log('❌ CONTENT_HUB_PASSWORD not set');
+    imageUrl = assetDetails.imageUrl;
+    imageToken = assetDetails.imageToken;
   }
 
-  // Final fallback for commentary
+  // Final fallback
   if (!shareCommentary) {
     shareCommentary = 'New content published from Sitecore Content Hub';
   }
 
-  console.log('✅ Final Share Commentary:', shareCommentary);
-  console.log('✅ Final Image URL:', imageUrl ? 'Found' : 'Not found - text only post');
-  console.log('✅ Available asset properties:', Object.keys(allAssetProperties).join(', '));
+  console.log('✅ Final Post Text:', shareCommentary);
+  console.log('✅ Image URL:', imageUrl || 'none');
 
   try {
     let postBody;
 
-    if (imageUrl) {
-      // ── Post WITH image ──
-      console.log('🖼️ Attempting to upload image to LinkedIn...');
-      const assetUrn = await uploadImageToLinkedIn(imageUrl, accessToken, memberId);
+    if (imageUrl && imageToken) {
+      // Post WITH image
+      console.log('🖼️ Uploading image to LinkedIn...');
+      const assetUrn = await uploadImageToLinkedIn(imageUrl, imageToken, accessToken, memberId);
 
       if (assetUrn) {
         postBody = {
@@ -566,13 +407,12 @@ app.post('/linkedin/publish', async (req, res) => {
             'com.linkedin.ugc.MemberNetworkVisibility': visibility
           }
         };
-        console.log('📸 Posting with image...');
+        console.log('📸 Posting WITH image...');
       } else {
-        console.log('⚠️ Image upload failed — falling back to text-only post');
+        console.log('⚠️ Image upload failed — text only post');
         postBody = buildTextOnlyPost(memberId, shareCommentary, lifecycleState, visibility);
       }
     } else {
-      // ── Text-only post ──
       console.log('📝 Posting text only...');
       postBody = buildTextOnlyPost(memberId, shareCommentary, lifecycleState, visibility);
     }
@@ -595,9 +435,8 @@ app.post('/linkedin/publish', async (req, res) => {
     res.json({
       success: true,
       postId: postResponse.data.id,
-      shareCommentary,
-      hasImage: !!imageUrl,
-      availableProperties: Object.keys(allAssetProperties),
+      postText: shareCommentary,
+      hasImage: !!(imageUrl && imageToken),
       message: 'Successfully published to LinkedIn'
     });
 
