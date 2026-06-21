@@ -18,7 +18,7 @@ const INSTAGRAM_GRAPH_URL = `https://graph.instagram.com/${INSTAGRAM_GRAPH_API_V
 // ============================================
 // 1. PUBLISH IMAGE POST TO INSTAGRAM
 // ============================================
-app.post('/api/instagram/publish-image', async (req, res) => {
+app.post('/publish-image', async (req, res) => {
   try {
     const { imageUrl, caption, mediaType = 'IMAGE' } = req.body;
 
@@ -76,7 +76,7 @@ app.post('/api/instagram/publish-image', async (req, res) => {
 // ============================================
 // 2. PUBLISH VIDEO/REEL TO INSTAGRAM
 // ============================================
-app.post('/api/instagram/publish-video', async (req, res) => {
+app.post('/publish-video', async (req, res) => {
   try {
     const { videoUrl, caption, thumbnailUrl } = req.body;
 
@@ -135,7 +135,7 @@ app.post('/api/instagram/publish-video', async (req, res) => {
 // ============================================
 // 3. GET INSTAGRAM ACCOUNT INSIGHTS
 // ============================================
-app.get('/api/instagram/insights', async (req, res) => {
+app.get('/insights', async (req, res) => {
   try {
     const { metric = 'impressions,reach,profile_views' } = req.query;
 
@@ -168,7 +168,7 @@ app.get('/api/instagram/insights', async (req, res) => {
 // ============================================
 // 4. REFRESH ACCESS TOKEN (if using short-lived tokens)
 // ============================================
-app.post('/api/instagram/refresh-token', async (req, res) => {
+app.post('/refresh-token', async (req, res) => {
   try {
     const { userAccessToken } = req.body;
 
@@ -203,7 +203,7 @@ app.post('/api/instagram/refresh-token', async (req, res) => {
 // ============================================
 // 5. WEBHOOK VERIFICATION (for future webhooks)
 // ============================================
-app.get('/api/instagram/webhook', (req, res) => {
+app.get('/webhook', (req, res) => {
   const verifyToken = process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN || 'sitecore_content_hub_webhook';
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
@@ -218,7 +218,7 @@ app.get('/api/instagram/webhook', (req, res) => {
 // ============================================
 // 6. WEBHOOK HANDLER (receive Instagram events)
 // ============================================
-app.post('/api/instagram/webhook', (req, res) => {
+app.post('/webhook', (req, res) => {
   const { entry } = req.body;
 
   if (entry) {
@@ -239,7 +239,7 @@ app.post('/api/instagram/webhook', (req, res) => {
 // ============================================
 // 7. HEALTH CHECK
 // ============================================
-app.get('/api/instagram/health', (req, res) => {
+app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
     service: 'Instagram Integration Middleware',
@@ -261,9 +261,8 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================
-// START SERVER
-// ============================================
 // REMOVED: app.listen() for Vercel serverless
 // The wrapper (api/instagram.js) handles server startup
+// ============================================
 
 export default app;
