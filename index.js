@@ -16,7 +16,8 @@ const {
   PORT,
   LINKEDIN_ACCESS_TOKEN,
   LINKEDIN_MEMBER_ID,
-  API_SECRET_KEY
+  API_SECRET_KEY,
+  CONTENT_HUB_API_KEY
 } = process.env;
 
 // ─────────────────────────────────────────────
@@ -93,15 +94,75 @@ app.get('/auth/linkedin/callback', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
+// Helper: Get asset details from Content Hub API
+// Returns { title, publicUrl, thumbnailUrl }
+// ─────────────────────────────────────────────
+async function getAssetDetails(assetId, contentHubBaseUrl) {
+  try {
+    console.log(`🔍 Fetching asset details for ID: ${assetId} from ${contentHubBaseUrl}`);
+
+    const response = await axios.get(
+      `${contentHubBaseUrl}/api/entities/${assetId}`,
+      {
+        headers: {
+          'X-Auth-Token': CONTENT_HUB_API_KEY,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    const entity = response.data;
+    console.log('✅ Asset entity fetched:', JSON.stringify(entity?.properties));
+
+    // Get title
+    const title = entity?.properties?.Title
+      || entity?.properties?.FileName
+      || entity?.identifier
+      || 'New content published from Sitecore Content Hub';
+
+    // Get public link from entity links
+    let publicUrl = null;
+    const links = entity?.['_links'] || {};
+
+    // Try to get thumbnail or preview URL
+    if (links['thumbnail']) {
+      publicUrl = links['thumbnail']?.href || null;
+    } else if (links['preview']) {
+      publicUrl = links['preview']?.href || null;
+    } else if (links['download']) {
+      publicUrl = links['download']?.href || null;
+    }
+
+    // Try renditions if available
+    if (!publicUrl && entity?.renditions) {
+      const renditions = entity.renditions;
+      publicUrl = renditions?.thumbnail?.href
+        || renditions?.preview?.href
+        || renditions?.download?.href
+        || null;
+    }
+
+    console.log('✅ Asset Title:', title);
+    console.log('✅ Asset Public URL:', publicUrl);
+
+    return { title, publicUrl };
+
+  } catch (err) {
+    console.error('❌ Failed to fetch asset from Content Hub:', err.response?.data || err.message);
+    return { title: null, publicUrl: null };
+  }
+}
+
+// ─────────────────────────────────────────────
 // Helper: Upload image to LinkedIn
-// Returns LinkedIn image asset URN
+// Returns LinkedIn asset URN or null
 // ─────────────────────────────────────────────
 async function uploadImageToLinkedIn(imageUrl, accessToken, memberId) {
   try {
     console.log('🖼️ Starting image upload to LinkedIn...');
     console.log('🖼️ Image URL:', imageUrl);
 
-    // Step A: Register image upload
+    // Step A: Register image upload with LinkedIn
     const registerResponse = await axios.post(
       'https://api.linkedin.com/v2/assets?action=registerUpload',
       {
@@ -125,14 +186,22 @@ async function uploadImageToLinkedIn(imageUrl, accessToken, memberId) {
       }
     );
 
-    const uploadUrl = registerResponse.data.value.uploadMechanism['com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest'].uploadUrl;
+    const uploadUrl = registerResponse.data.value.uploadMechanism[
+      'com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest'
+    ].uploadUrl;
     const assetUrn = registerResponse.data.value.asset;
 
-    console.log('✅ Upload URL obtained');
+    console.log('✅ LinkedIn upload URL obtained');
     console.log('✅ Asset URN:', assetUrn);
 
-    // Step B: Download image from Content Hub URL
-    const imageResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+    // Step B: Download image from Content Hub
+    const imageResponse = await axios.get(imageUrl, {
+      responseType: 'arraybuffer',
+      headers: {
+        'X-Auth-Token': CONTENT_HUB_API_KEY
+      }
+    });
+
     const imageBuffer = Buffer.from(imageResponse.data);
     console.log('✅ Image downloaded, size:', imageBuffer.length, 'bytes');
 
@@ -148,14 +217,39 @@ async function uploadImageToLinkedIn(imageUrl, accessToken, memberId) {
     return assetUrn;
 
   } catch (err) {
-    console.error('❌ Image upload failed:', err.response?.data || err.message);
-    return null; // fallback to text-only post
+    console.error('❌ Image upload to LinkedIn failed:', err.response?.data || err.message);
+    return null;
   }
 }
 
 // ─────────────────────────────────────────────
+// Helper: Build text-only post body
+// ─────────────────────────────────────────────
+function buildTextOnlyPost(memberId, shareCommentary, lifecycleState, visibility) {
+  return {
+    author: `urn:li:person:${memberId}`,
+    lifecycleState,
+    specificContent: {
+      'com.linkedin.ugc.ShareContent': {
+        shareCommentary: { text: shareCommentary },
+        shareMediaCategory: 'NONE'
+      }
+    },
+    visibility: {
+      'com.linkedin.ugc.MemberNetworkVisibility': visibility
+    }
+  };
+}
+
+// ─────────────────────────────────────────────
+// Handle GET on /linkedin/publish for test connection
+// ─────────────────────────────────────────────
+app.get('/linkedin/publish', (req, res) => {
+  res.json({ status: '✅ LinkedIn publish endpoint is ready. Use POST to publish.' });
+});
+
+// ─────────────────────────────────────────────
 // STEP 3: Publish content to LinkedIn
-// Supports text-only and image posts
 // Called by Content Hub Trigger/Action
 // ─────────────────────────────────────────────
 app.post('/linkedin/publish', async (req, res) => {
@@ -177,25 +271,61 @@ app.post('/linkedin/publish', async (req, res) => {
   if (!accessToken) return res.status(500).json({ error: 'LINKEDIN_ACCESS_TOKEN not configured' });
   if (!memberId) return res.status(500).json({ error: 'LINKEDIN_MEMBER_ID not configured' });
 
-  // Read values from Content Hub
-  const shareCommentary = req.body.shareCommentary || req.body.ShareCommentary || 'New content published from Sitecore Content Hub';
-  const lifecycleState = req.body.lifecycleState || req.body.LifecycleState || 'PUBLISHED';
-  const visibility = req.body.visibility || req.body.Visibility || 'PUBLIC';
-  const imageUrl = req.body.imageUrl || req.body.ImageUrl || null; // ← public URL of asset
+  // ─────────────────────────────────────────
+  // Content Hub sends data inside "context"
+  // Headers also contain useful metadata
+  // ─────────────────────────────────────────
+  const context = req.body.context || {};
+  const saveMsg = req.body.saveEntityMessage || {};
 
-  console.log('Message:', shareCommentary);
-  console.log('Image URL:', imageUrl);
+  // Get asset ID and source system from headers
+  const assetId = req.headers['target_id'] || saveMsg.TargetId;
+  const sourceSystem = req.headers['source_system'] || CONTENT_HUB_URL;
+
+  console.log('✅ Asset ID:', assetId);
+  console.log('✅ Source System:', sourceSystem);
+
+  // Get lifecycle values from context
+  const lifecycleState = context.lifecycleState || 'PUBLISHED';
+  const visibility = context.visibility || 'PUBLIC';
+
+  // ─────────────────────────────────────────
+  // Fetch asset details from Content Hub API
+  // to get real title and image URL
+  // ─────────────────────────────────────────
+  let shareCommentary = context.shareCommentary || null;
+  let imageUrl = null;
+
+  if (assetId && sourceSystem && CONTENT_HUB_API_KEY) {
+    console.log('🔍 Fetching asset details from Content Hub...');
+    const assetDetails = await getAssetDetails(assetId, sourceSystem);
+
+    // Use fetched title if shareCommentary token didn't resolve properly
+    if (!shareCommentary || shareCommentary === '{Title}' || shareCommentary === '') {
+      shareCommentary = assetDetails.title;
+    }
+
+    // Use fetched image URL
+    imageUrl = assetDetails.publicUrl;
+  }
+
+  // Final fallback for commentary
+  if (!shareCommentary) {
+    shareCommentary = 'New content published from Sitecore Content Hub';
+  }
+
+  console.log('✅ Share Commentary:', shareCommentary);
+  console.log('✅ Image URL:', imageUrl);
 
   try {
     let postBody;
 
     if (imageUrl) {
       // ── Post WITH image ──
-      console.log('🖼️ Image URL provided — uploading image to LinkedIn...');
+      console.log('🖼️ Uploading image to LinkedIn...');
       const assetUrn = await uploadImageToLinkedIn(imageUrl, accessToken, memberId);
 
       if (assetUrn) {
-        // Image uploaded successfully — create post with image
         postBody = {
           author: `urn:li:person:${memberId}`,
           lifecycleState,
@@ -219,13 +349,12 @@ app.post('/linkedin/publish', async (req, res) => {
         };
         console.log('📸 Posting with image...');
       } else {
-        // Image upload failed — fallback to text only
-        console.log('⚠️ Image upload failed, falling back to text-only post');
+        console.log('⚠️ Image upload failed — falling back to text-only post');
         postBody = buildTextOnlyPost(memberId, shareCommentary, lifecycleState, visibility);
       }
     } else {
       // ── Text-only post ──
-      console.log('📝 No image URL — posting text only...');
+      console.log('📝 Posting text only...');
       postBody = buildTextOnlyPost(memberId, shareCommentary, lifecycleState, visibility);
     }
 
@@ -247,6 +376,7 @@ app.post('/linkedin/publish', async (req, res) => {
     res.json({
       success: true,
       postId: postResponse.data.id,
+      shareCommentary,
       hasImage: !!imageUrl,
       message: 'Successfully published to LinkedIn'
     });
@@ -258,28 +388,6 @@ app.post('/linkedin/publish', async (req, res) => {
       details: err.response?.data || err.message
     });
   }
-});
-
-// Helper: build text-only post body
-function buildTextOnlyPost(memberId, shareCommentary, lifecycleState, visibility) {
-  return {
-    author: `urn:li:person:${memberId}`,
-    lifecycleState,
-    specificContent: {
-      'com.linkedin.ugc.ShareContent': {
-        shareCommentary: { text: shareCommentary },
-        shareMediaCategory: 'NONE'
-      }
-    },
-    visibility: {
-      'com.linkedin.ugc.MemberNetworkVisibility': visibility
-    }
-  };
-}
-
-// Handle GET on /linkedin/publish for test connection
-app.get('/linkedin/publish', (req, res) => {
-  res.json({ status: '✅ LinkedIn publish endpoint is ready. Use POST to publish.' });
 });
 
 app.listen(PORT || 3000, () => {
