@@ -173,12 +173,14 @@ async function getAssetDetails(assetId, contentHubBaseUrl) {
 
     // ── Get Image URL from Renditions ──
     let imageUrl = null;
-    const renditions = props.Renditions;
+    const renditions = entity?.renditions;
 
     if (renditions && typeof renditions === 'object') {
+		console.log(`✅ Image rendition selected: ${renditions.downloadOriginal[0].href}`);
+		imageUrl = renditions.downloadOriginal[0].href;
       // Priority: preview > bigthumbnail > thumbnail_cropped > thumbnail
-      const priority = ['preview', 'preview_download', 'bigthumbnail', 'thumbnail_cropped', 'thumbnail'];
-
+      /* const priority = ['preview', 'preview_download', 'bigthumbnail', 'thumbnail_cropped', 'thumbnail'];
+ 
       for (const type of priority) {
         const r = renditions[type];
         if (r && r.status === 'completed' && r.locations?.local?.length > 0) {
@@ -190,7 +192,7 @@ async function getAssetDetails(assetId, contentHubBaseUrl) {
             break;
           }
         }
-      }
+      } */
     }
 
     if (!imageUrl) {
