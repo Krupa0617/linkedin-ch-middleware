@@ -97,6 +97,7 @@ app.get('/auth/linkedin/callback', async (req, res) => {
 // ─────────────────────────────────────────────
 // Helper: Authenticate with Content Hub
 // Returns auth token string
+// ✅ FIXED: Properly extract token from response
 // ─────────────────────────────────────────────
 async function getContentHubToken(contentHubBaseUrl) {
   try {
@@ -111,17 +112,40 @@ async function getContentHubToken(contentHubBaseUrl) {
         headers: { 'Content-Type': 'application/json' }
       }
     );
+    
+    // ✅ FIXED: Extract token correctly from various response formats
+    // Content Hub may return { token: "..." } or { access_token: "..." } or just the token string
+    const token = response.data.token 
+      || response.data.access_token 
+      || response.data;
+    
+    // ✅ NEW: Validate token format
+    if (typeof token !== 'string') {
+      console.error('❌ Token extraction failed - not a string');
+      console.error('❌ Response data:', JSON.stringify(response.data));
+      return null;
+    }
+
+    if (token.trim().length === 0) {
+      console.error('❌ Token is empty string');
+      return null;
+    }
+
     console.log('✅ Content Hub token obtained');
-    return response.data; // returns token string directly
+    console.log('✅ Token length:', token.length, 'characters');
+    return token;
+    
   } catch (err) {
-    console.error('❌ Content Hub auth failed:', err.response?.data || err.message);
+    console.error('❌ Content Hub auth failed:', err.response?.status, err.response?.data || err.message);
+    console.error('❌ Full error details:', JSON.stringify(err.response?.data, null, 2));
     return null;
   }
 }
 
 // ─────────────────────────────────────────────
 // Helper: Get asset details from Content Hub API
-// Returns { title, publicUrl }
+// Returns { title, publicUrl, allProperties, token }
+// ✅ FIXED: Enhanced property logging + token validation
 // ─────────────────────────────────────────────
 async function getAssetDetails(assetId, contentHubBaseUrl) {
   try {
@@ -131,8 +155,16 @@ async function getAssetDetails(assetId, contentHubBaseUrl) {
     const token = await getContentHubToken(contentHubBaseUrl);
     if (!token) {
       console.error('❌ Could not get Content Hub token');
-      return { title: null, publicUrl: null };
+      return { title: null, publicUrl: null, allProperties: {} };
     }
+
+    // ✅ NEW: Validate token is a string before using
+    if (typeof token !== 'string' || token.trim().length === 0) {
+      console.error('❌ Invalid token format or empty token');
+      return { title: null, publicUrl: null, allProperties: {} };
+    }
+
+    console.log('✅ Token validated - proceeding with asset fetch');
 
     // Step 2: Fetch asset entity
     const response = await axios.get(
@@ -147,12 +179,56 @@ async function getAssetDetails(assetId, contentHubBaseUrl) {
 
     const entity = response.data;
     console.log('✅ Asset entity fetched successfully');
-    console.log('✅ Entity properties:', JSON.stringify(entity?.properties));
-    console.log('✅ Entity links:', JSON.stringify(Object.keys(entity?.['_links'] || {})));
+
+    // ✅ NEW: Comprehensive property logging
+    console.log('\n📋 ═══════════════════════════════════════════');
+    console.log('📋 ALL ASSET PROPERTIES');
+    console.log('📋 ═══════════════════════════════════════════');
+    
+    if (entity?.properties) {
+      // Full JSON output
+      console.log('📋 Full Properties Object (JSON):');
+      console.log(JSON.stringify(entity.properties, null, 2));
+      
+      // Individual property breakdown
+      console.log('\n📋 Property Breakdown:');
+      const propertyKeys = Object.keys(entity.properties);
+      console.log(`📋 Total properties: ${propertyKeys.length}`);
+      
+      propertyKeys.forEach((key, index) => {
+        const value = entity.properties[key];
+        const valueType = typeof value;
+        console.log(`\n  ${index + 1}. ${key}`);
+        console.log(`     Type: ${valueType}`);
+        if (Array.isArray(value)) {
+          console.log(`     Is Array: true (length: ${value.length})`);
+          console.log(`     Value: ${JSON.stringify(value)}`);
+        } else if (typeof value === 'object' && value !== null) {
+          console.log(`     Is Object: true`);
+          console.log(`     Value: ${JSON.stringify(value, null, 2)}`);
+        } else {
+          console.log(`     Value: ${value}`);
+        }
+      });
+    } else {
+      console.log('📋 ⚠️  No properties found in entity');
+    }
+    
+    console.log('📋 ═══════════════════════════════════════════\n');
+
+    // ✅ NEW: Log complete entity structure
+    console.log('📋 ENTITY STRUCTURE:');
+    const entityKeys = Object.keys(entity);
+    console.log(`📋 Entity has ${entityKeys.length} top-level fields:`);
+    entityKeys.forEach((key, index) => {
+      console.log(`  ${index + 1}. ${key}: ${typeof entity[key]}`);
+    });
+    console.log('');
 
     // Get title from properties
     const title = entity?.properties?.Title
       || entity?.properties?.FileName
+      || entity?.properties?.Name
       || entity?.identifier
       || null;
 
@@ -179,13 +255,41 @@ async function getAssetDetails(assetId, contentHubBaseUrl) {
     }
 
     console.log('✅ Asset Title:', title);
-    console.log('✅ Asset Image URL:', publicUrl ? publicUrl.split('?')[0] : null);
+    console.log('✅ Asset Image URL:', publicUrl ? publicUrl.split('?')[0] : 'Not found - text only post');
 
-    return { title, publicUrl, token };
+    return { 
+      title, 
+      publicUrl, 
+      token,
+      allProperties: entity?.properties || {}
+    };
 
   } catch (err) {
-    console.error('❌ Failed to fetch asset from Content Hub:', err.response?.data || err.message);
-    return { title: null, publicUrl: null, token: null };
+    console.error('\n❌ Failed to fetch asset from Content Hub');
+    console.error('❌ Error Status:', err.response?.status);
+    console.error('❌ Error Message:', err.message);
+    
+    if (err.response?.data) {
+      console.error('❌ Error Data:', JSON.stringify(err.response.data, null, 2));
+    }
+
+    // ✅ NEW: Enhanced troubleshooting for 401 error
+    if (err.response?.status === 401) {
+      console.error('\n⚠️  401 UNAUTHORIZED - Troubleshooting Steps:');
+      console.error('   1. ❓ Verify CONTENT_HUB_USERNAME is correct');
+      console.error('   2. ❓ Verify CONTENT_HUB_PASSWORD is correct');
+      console.error('   3. ❓ Check if user has permissions to access asset ID:', assetId);
+      console.error('   4. ❓ Verify asset ID exists in Content Hub');
+      console.error('   5. ❓ Check if Content Hub API token is valid/not expired');
+      console.error('   6. ❓ Ensure X-Auth-Token header is correctly formatted');
+    }
+
+    return { 
+      title: null, 
+      publicUrl: null, 
+      token: null,
+      allProperties: {}
+    };
   }
 }
 
@@ -326,10 +430,14 @@ app.post('/linkedin/publish', async (req, res) => {
   // ─────────────────────────────────────────
   let shareCommentary = context.shareCommentary || null;
   let imageUrl = null;
+  let allAssetProperties = {};
 
   if (assetId && sourceSystem && CONTENT_HUB_USERNAME && CONTENT_HUB_PASSWORD) {
     console.log('🔍 Fetching asset details from Content Hub API...');
     const assetDetails = await getAssetDetails(assetId, sourceSystem);
+
+    // ✅ NEW: Store all properties for flexible use
+    allAssetProperties = assetDetails.allProperties || {};
 
     // Use fetched title if token not resolved
     if (!shareCommentary || shareCommentary === '{Title}' || shareCommentary.trim() === '') {
@@ -351,6 +459,7 @@ app.post('/linkedin/publish', async (req, res) => {
 
   console.log('✅ Final Share Commentary:', shareCommentary);
   console.log('✅ Final Image URL:', imageUrl ? 'Found' : 'Not found - text only post');
+  console.log('✅ Available asset properties:', Object.keys(allAssetProperties).join(', '));
 
   try {
     let postBody;
@@ -413,6 +522,7 @@ app.post('/linkedin/publish', async (req, res) => {
       postId: postResponse.data.id,
       shareCommentary,
       hasImage: !!imageUrl,
+      availableProperties: Object.keys(allAssetProperties),
       message: 'Successfully published to LinkedIn'
     });
 
