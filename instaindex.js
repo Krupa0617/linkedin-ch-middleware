@@ -263,10 +263,7 @@ app.use((err, req, res, next) => {
 // ============================================
 // START SERVER
 // ============================================
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Instagram Integration Middleware running on port ${PORT}`);
-  console.log(`Business Account ID: ${INSTAGRAM_BUSINESS_ACCOUNT_ID}`);
-});
+// REMOVED: app.listen() for Vercel serverless
+// The wrapper (api/instagram.js) handles server startup
 
 export default app;
