@@ -1,5 +1,5 @@
-// api/instagram.js
-import serverless from 'serverless-http';
-import app from '../instaindex.js';
+// // api/instagram.js
+// import serverless from 'serverless-http';
+// import app from '../instaindex.js';
 
-export default serverless(app);
+// export default serverless(app);
