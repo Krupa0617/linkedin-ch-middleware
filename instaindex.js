@@ -24,9 +24,8 @@ const {
   CONTENT_HUB_PASSWORD,
 } = process.env;
 
-const INSTAGRAM_GRAPH_API_VERSION = 'v22.0';
-const INSTAGRAM_GRAPH_URL = `https://graph.instagram.com/${INSTAGRAM_GRAPH_API_VERSION}`;
-
+const INSTAGRAM_GRAPH_API_VERSION = 'v23.0';
+const INSTAGRAM_GRAPH_URL = `https://graph.facebook.com/${INSTAGRAM_GRAPH_API_VERSION}`;
 // ─────────────────────────────────────────────
 // ROOT — Health check (mirrors LinkedIn '/')
 // ─────────────────────────────────────────────
@@ -179,52 +178,87 @@ app.post('/api/instagram/publish-image', async (req, res) => {
   console.log('📢 Incoming Instagram image publish request from Content Hub');
   console.log('Body:', JSON.stringify(req.body));
 
-  // ── Security check (same as LinkedIn) ──
+  // ── Security check ──
   const apiKey = req.headers['x-api-key'];
+
   if (!apiKey || apiKey !== API_SECRET_KEY) {
     console.error('❌ Unauthorized - invalid x-api-key');
-    return res.status(401).json({ error: 'Unauthorized' });
+
+    return res.status(401).json({
+      error: 'Unauthorized'
+    });
   }
 
   if (!INSTAGRAM_ACCESS_TOKEN) {
-    return res.status(500).json({ error: 'INSTAGRAM_ACCESS_TOKEN not configured' });
-  }
-  if (!INSTAGRAM_BUSINESS_ACCOUNT_ID) {
-    return res.status(500).json({ error: 'INSTAGRAM_BUSINESS_ACCOUNT_ID not configured' });
+    return res.status(500).json({
+      error: 'INSTAGRAM_ACCESS_TOKEN not configured'
+    });
   }
 
-  // ── Read context from Content Hub (same pattern as LinkedIn) ──
+  if (!INSTAGRAM_BUSINESS_ACCOUNT_ID) {
+    return res.status(500).json({
+      error: 'INSTAGRAM_BUSINESS_ACCOUNT_ID not configured'
+    });
+  }
+
+  // ─────────────────────────────────────────────
+  // Read Content Hub context
+  // ─────────────────────────────────────────────
   const context = req.body.context || {};
   const saveMsg = req.body.saveEntityMessage || {};
 
-  const assetId = req.headers['target_id'] || saveMsg.TargetId;
-  const sourceSystem = req.headers['source_system'] || CONTENT_HUB_URL;
+  const assetId =
+    req.headers['target_id'] ||
+    saveMsg.TargetId;
+
+  const sourceSystem =
+    req.headers['source_system'] ||
+    CONTENT_HUB_URL;
 
   console.log('✅ Asset ID:', assetId);
   console.log('✅ Source System:', sourceSystem);
 
-  // ── Fetch asset details from Content Hub ──
+  // ─────────────────────────────────────────────
+  // Fetch asset details
+  // ─────────────────────────────────────────────
   let caption = context.caption || null;
   let imageUrl = null;
-  let imageToken = null;
 
-  if (assetId && sourceSystem && CONTENT_HUB_USERNAME && CONTENT_HUB_PASSWORD) {
-    const assetDetails = await getAssetDetails(assetId, sourceSystem);
+  if (
+    assetId &&
+    sourceSystem &&
+    CONTENT_HUB_USERNAME &&
+    CONTENT_HUB_PASSWORD
+  ) {
 
-    // Priority: SocialPostCaption > Title from context > Title from API
+    const assetDetails = await getAssetDetails(
+      assetId,
+      sourceSystem
+    );
+
+    // Priority:
+    // SocialPostCaption > Context Caption > Title
     if (assetDetails.socialCaption) {
+
       caption = assetDetails.socialCaption;
-      console.log('✅ Using SocialPostCaption for caption');
+
+      console.log(
+        '✅ Using SocialPostCaption for caption'
+      );
+
     } else if (!caption || caption === '{Title}') {
+
       caption = assetDetails.title;
-      console.log('✅ Using Title for caption');
+
+      console.log(
+        '✅ Using Title for caption'
+      );
     }
 
     imageUrl = assetDetails.imageUrl;
-    imageToken = assetDetails.imageToken;
   }
 
-  // ── Final fallback ──
+  // Final fallback caption
   if (!caption) {
     caption = 'New content published from Sitecore Content Hub';
   }
@@ -232,98 +266,106 @@ app.post('/api/instagram/publish-image', async (req, res) => {
   console.log('✅ Final Caption:', caption);
   console.log('✅ Image URL:', imageUrl || 'none');
 
+  // Validate image URL
   if (!imageUrl) {
+
     return res.status(400).json({
       error: 'No image URL found for asset',
       assetId,
-      hint: 'Ensure the asset has a downloadOriginal rendition and is an image file type',
+      hint:
+        'Ensure the asset has a downloadOriginal rendition'
     });
   }
 
   try {
-    // ── Step 1: Download image from Content Hub with auth token ──
-    console.log('📥 Downloading image from Content Hub...');
-    const imageResponse = await axios.get(imageUrl, {
-      responseType: 'arraybuffer',
-      headers: { 'X-Auth-Token': imageToken },
-      maxContentLength: 20 * 1024 * 1024,
-      timeout: 30000,
-    });
 
-    const imageBuffer = Buffer.from(imageResponse.data);
-    const imageContentType = imageResponse.headers['content-type'] || 'image/jpeg';
+    // ─────────────────────────────────────────────
+    // Step 1: Create Instagram Media Container
+    // ─────────────────────────────────────────────
+    console.log(
+      '📤 Creating Instagram media container...'
+    );
 
-    console.log('✅ Image downloaded:', imageBuffer.length, 'bytes');
-    console.log('✅ Image content type:', imageContentType);
-
-    if (imageBuffer.length === 0) {
-      return res.status(500).json({ error: 'Downloaded image buffer is empty' });
-    }
-
-    if (!imageContentType.startsWith('image/')) {
-      return res.status(500).json({
-        error: 'Content Hub did not return an image',
-        contentType: imageContentType,
-      });
-    }
-
-    // ── Step 2: Upload image to a publicly accessible URL ──
-    // Instagram Graph API requires a public URL for the image.
-    // Since Content Hub URLs are authenticated, we upload the image buffer
-    // to a temporary public URL via a base64 data URI approach is NOT supported
-    // by Instagram — instead we pass the Content Hub URL directly with token
-    // appended as a query param (if your CH supports it), OR host it temporarily.
-    //
-    // RECOMMENDED: Pass imageUrl + token as query param if Content Hub supports it,
-    // OR use an S3/Cloudinary upload step here.
-    //
-    // For now, we attempt direct URL (works if CH rendition URL is public):
-    console.log('📤 Creating Instagram media container...');
     const containerResponse = await axios.post(
       `${INSTAGRAM_GRAPH_URL}/${INSTAGRAM_BUSINESS_ACCOUNT_ID}/media`,
       {
-        image_url: imageUrl,   // Must be a publicly accessible URL
+        image_url: imageUrl,
         caption: caption,
-        media_type: 'IMAGE',
         access_token: INSTAGRAM_ACCESS_TOKEN,
+      },
+      {
+        timeout: 60000,
       }
     );
 
     const containerId = containerResponse.data.id;
-    console.log('✅ Container created:', containerId);
 
-    // ── Step 3: Publish the container ──
+    console.log(
+      '✅ Instagram container created:',
+      containerId
+    );
+
+    // ─────────────────────────────────────────────
+    // Step 2: Wait for Instagram Processing
+    // ─────────────────────────────────────────────
+    console.log(
+      '⏳ Waiting for Instagram to process image...'
+    );
+
+    await waitForInstagramContainer(containerId);
+
+    // ─────────────────────────────────────────────
+    // Step 3: Publish Media
+    // ─────────────────────────────────────────────
+    console.log(
+      '📤 Publishing Instagram media...'
+    );
+
     const publishResponse = await axios.post(
       `${INSTAGRAM_GRAPH_URL}/${INSTAGRAM_BUSINESS_ACCOUNT_ID}/media_publish`,
       {
         creation_id: containerId,
         access_token: INSTAGRAM_ACCESS_TOKEN,
+      },
+      {
+        timeout: 60000,
       }
     );
 
     const postId = publishResponse.data.id;
-    console.log('✅ Successfully published to Instagram!');
-    console.log('✅ Post ID:', postId);
 
-    res.json({
+    console.log(
+      '✅ Successfully published image to Instagram!'
+    );
+
+    console.log('✅ Instagram Post ID:', postId);
+
+    return res.json({
       success: true,
       postId,
       caption,
       instagramUrl: `https://instagram.com/p/${postId}`,
-      message: 'Successfully published image to Instagram',
+      message:
+        'Successfully published image to Instagram',
       timestamp: new Date().toISOString(),
     });
 
   } catch (err) {
-    console.error('❌ Instagram image publish failed:', err.response?.data || err.message);
-    res.status(500).json({
+
+    console.error(
+      '❌ Instagram image publish failed:',
+      err.response?.data || err.message
+    );
+
+    return res.status(500).json({
       error: 'Failed to publish image to Instagram',
-      details: err.response?.data?.error || err.message,
+      details:
+        err.response?.data?.error ||
+        err.message,
       code: err.response?.status,
     });
   }
 });
-
 // ─────────────────────────────────────────────
 // PUBLISH VIDEO/REEL TO INSTAGRAM
 // Same pattern as publish-image but for VIDEO
@@ -449,30 +491,67 @@ app.post('/api/instagram/publish-video', async (req, res) => {
 // (mirrors waitForLinkedInAsset in index.js)
 // ─────────────────────────────────────────────
 async function waitForInstagramContainer(containerId) {
-  for (let attempt = 1; attempt <= 10; attempt++) {
-    const statusResponse = await axios.get(
-      `${INSTAGRAM_GRAPH_URL}/${containerId}`,
-      {
-        params: {
-          fields: 'status_code,status',
-          access_token: INSTAGRAM_ACCESS_TOKEN,
-        },
-        timeout: 10000,
+
+  const maxAttempts = 20;
+  const delayMs = 5000;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+
+    try {
+
+      const statusResponse = await axios.get(
+        `${INSTAGRAM_GRAPH_URL}/${containerId}`,
+        {
+          params: {
+            fields: 'status_code,status',
+            access_token: INSTAGRAM_ACCESS_TOKEN,
+          },
+          timeout: 15000,
+        }
+      );
+
+      const statusCode = statusResponse.data?.status_code;
+      const status = statusResponse.data?.status;
+
+      console.log(
+        `⏳ Instagram container status attempt ${attempt}:`,
+        statusCode || status || 'unknown'
+      );
+
+      // ✅ Success
+      if (statusCode === 'FINISHED') {
+        console.log('✅ Instagram container processing finished');
+        return true;
       }
-    );
 
-    const statusCode = statusResponse.data?.status_code;
-    console.log(`Instagram container status attempt ${attempt}:`, statusCode || 'unknown');
+      // ❌ Failure
+      if (
+        statusCode === 'ERROR' ||
+        statusCode === 'EXPIRED'
+      ) {
+        throw new Error(
+          `Instagram media processing failed with status: ${statusCode}`
+        );
+      }
 
-    if (statusCode === 'FINISHED') return true;
-    if (statusCode === 'ERROR' || statusCode === 'EXPIRED') {
-      throw new Error(`Instagram video processing failed: ${statusCode}`);
+      // ⏳ Wait before next poll
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+
+    } catch (err) {
+
+      console.error(
+        `❌ Error checking Instagram container status (attempt ${attempt}):`,
+        err.response?.data || err.message
+      );
+
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, delayMs));
     }
-
-    await new Promise(resolve => setTimeout(resolve, 3000)); // 3s between attempts
   }
 
-  throw new Error('Instagram video container did not finish processing in time');
+  throw new Error(
+    'Instagram media container did not finish processing in time'
+  );
 }
 
 // ─────────────────────────────────────────────
