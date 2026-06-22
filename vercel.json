@@ -6,6 +6,8 @@
   ],
   "routes": [
     { "src": "/api/instagram/(.*)", "dest": "instaindex.js" },
-    { "src": "/linkedin/(.*)", "dest": "index.js" }
+    { "src": "/auth/linkedin/(.*)", "dest": "index.js" },
+    { "src": "/linkedin/(.*)",      "dest": "index.js" },
+    { "src": "/(.*)",               "dest": "index.js" }
   ]
 }
