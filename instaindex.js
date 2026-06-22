@@ -3,7 +3,6 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import sharp from 'sharp';
-import { put } from '@vercel/blob';
 
 dotenv.config();
 
@@ -28,6 +27,9 @@ const {
 const INSTAGRAM_GRAPH_API_VERSION = 'v22.0';
 const INSTAGRAM_GRAPH_URL = `https://graph.instagram.com/${INSTAGRAM_GRAPH_API_VERSION}`;
 
+// In-memory token cache — avoids re-authenticating for every proxy request
+const tokenCache = { token: null, expiry: 0 };
+
 // ─────────────────────────────────────────────
 // ROOT — mirrors LinkedIn '/'
 // ─────────────────────────────────────────────
@@ -35,12 +37,13 @@ app.get('/', (req, res) => {
   res.json({
     status: '✅ Instagram Content Hub Middleware is running',
     endpoints: {
-      publishImage: 'POST /api/instagram/publish-image',
-      publishVideo: 'POST /api/instagram/publish-video',
-      insights:     'GET  /api/instagram/insights',
-      refreshToken: 'POST /api/instagram/refresh-token',
-      webhook:      'GET  /api/instagram/webhook',
-      health:       'GET  /api/instagram/health',
+      publishImage:  'POST /api/instagram/publish-image',
+      publishVideo:  'POST /api/instagram/publish-video',
+      imageProxy:    'GET  /api/instagram/image-proxy/:assetId',
+      insights:      'GET  /api/instagram/insights',
+      refreshToken:  'POST /api/instagram/refresh-token',
+      webhook:       'GET  /api/instagram/webhook',
+      health:        'GET  /api/instagram/health',
     }
   });
 });
@@ -51,6 +54,13 @@ app.get('/', (req, res) => {
 // ─────────────────────────────────────────────
 async function getContentHubToken(contentHubBaseUrl) {
   try {
+    // Return cached token if still valid (cache for 15 mins)
+    const now = Date.now();
+    if (tokenCache.token && now < tokenCache.expiry) {
+      console.log('✅ Using cached Content Hub token');
+      return tokenCache.token;
+    }
+
     console.log('🔐 Authenticating with Content Hub...');
     const response = await axios.post(
       `${contentHubBaseUrl}/api/authenticate`,
@@ -70,6 +80,10 @@ async function getContentHubToken(contentHubBaseUrl) {
       console.error('❌ Token extraction failed:', JSON.stringify(response.data));
       return null;
     }
+
+    // Cache for 15 minutes
+    tokenCache.token = token;
+    tokenCache.expiry = now + 15 * 60 * 1000;
 
     console.log('✅ Content Hub token obtained, length:', token.length);
     return token;
@@ -112,7 +126,7 @@ async function getAssetDetails(assetId, contentHubBaseUrl) {
     const title = props.Title || props.FileName || entity?.identifier || null;
     console.log('✅ Title:', title);
 
-    // ── Get SocialPostCaption (multilingual field — identical to LinkedIn) ──
+    // ── Get SocialPostCaption (multilingual — identical to LinkedIn) ──
     let socialCaption = null;
     const rawCaption = props.SocialPostCaption;
     if (rawCaption && typeof rawCaption === 'object') {
@@ -132,7 +146,7 @@ async function getAssetDetails(assetId, contentHubBaseUrl) {
     console.log('✅ Detected media type:', mediaType);
 
     // ── Get rendition URL ──
-    // Priority: downloadOriginal → original → first available rendition
+    // Priority: downloadOriginal → original → first available
     let imageUrl = null;
     let videoUrl = null;
     const renditions = entity?.renditions;
@@ -168,12 +182,10 @@ async function getAssetDetails(assetId, contentHubBaseUrl) {
 }
 
 // ─────────────────────────────────────────────
-// Helper: Download image from Content Hub,
-//         resize to Instagram-safe 1:1 ratio,
-//         upload to Vercel Blob → return public URL
+// Helper: Download + resize image buffer
+// Returns resized JPEG buffer ready for streaming
 // ─────────────────────────────────────────────
-async function prepareImageForInstagram(imageUrl, imageToken, assetId) {
-  // Step 1: Download from Content Hub with auth token
+async function downloadAndResize(imageUrl, imageToken) {
   console.log('📥 Downloading image from Content Hub...');
   const imageResponse = await axios.get(imageUrl, {
     responseType: 'arraybuffer',
@@ -186,16 +198,12 @@ async function prepareImageForInstagram(imageUrl, imageToken, assetId) {
   const imageContentType = imageResponse.headers['content-type'] || 'image/jpeg';
 
   console.log('✅ Image downloaded:', imageBuffer.length, 'bytes');
-  console.log('✅ Image content type:', imageContentType);
+  console.log('✅ Content type:', imageContentType);
 
-  if (imageBuffer.length === 0) {
-    throw new Error('Downloaded image buffer is empty');
-  }
-  if (!imageContentType.startsWith('image/')) {
-    throw new Error(`Content Hub did not return an image. Got: ${imageContentType}`);
-  }
+  if (imageBuffer.length === 0) throw new Error('Downloaded image buffer is empty');
+  if (!imageContentType.startsWith('image/')) throw new Error(`Not an image: ${imageContentType}`);
 
-  // Step 2: Get image metadata to check aspect ratio
+  // Check aspect ratio
   const metadata = await sharp(imageBuffer).metadata();
   const width = metadata.width || 1080;
   const height = metadata.height || 1080;
@@ -203,22 +211,19 @@ async function prepareImageForInstagram(imageUrl, imageToken, assetId) {
 
   console.log(`✅ Original dimensions: ${width}x${height} (ratio: ${ratio.toFixed(3)})`);
 
-  // Instagram valid range: 0.8 (4:5 portrait) to 1.91 (landscape)
+  // Instagram valid range: 4:5 (0.8) to 1.91:1
   const MIN_RATIO = 0.8;
   const MAX_RATIO = 1.91;
 
   let resizedBuffer;
-
   if (ratio >= MIN_RATIO && ratio <= MAX_RATIO) {
-    // ✅ Already valid — just ensure max width 1080px
-    console.log('✅ Aspect ratio is valid for Instagram — resizing width to 1080px');
+    console.log('✅ Aspect ratio valid — resizing to max 1080px wide');
     resizedBuffer = await sharp(imageBuffer)
       .resize(1080, null, { fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality: 90 })
       .toBuffer();
   } else {
-    // ❌ Invalid ratio — crop to 1:1 square (safe for all Instagram formats)
-    console.log('⚠️ Aspect ratio out of Instagram range — cropping to 1:1 square');
+    console.log('⚠️ Aspect ratio out of range — cropping to 1:1 square (1080x1080)');
     resizedBuffer = await sharp(imageBuffer)
       .resize(1080, 1080, { fit: 'cover', position: 'centre' })
       .jpeg({ quality: 90 })
@@ -226,24 +231,11 @@ async function prepareImageForInstagram(imageUrl, imageToken, assetId) {
   }
 
   console.log('✅ Processed image size:', resizedBuffer.length, 'bytes');
-
-  // Step 3: Upload to Vercel Blob (public URL Instagram can access)
-  console.log('☁️ Uploading to Vercel Blob...');
-  const blob = await put(
-    `instagram/${assetId}-${Date.now()}.jpg`,
-    resizedBuffer,
-    {
-      access: 'public',
-      contentType: 'image/jpeg',
-    }
-  );
-
-  console.log('✅ Vercel Blob URL:', blob.url);
-  return blob.url;
+  return resizedBuffer;
 }
 
 // ─────────────────────────────────────────────
-// Helper: Wait for Instagram video container
+// Helper: Wait for Instagram container to be ready
 // (mirrors waitForLinkedInAsset in index.js)
 // ─────────────────────────────────────────────
 async function waitForInstagramContainer(containerId) {
@@ -260,18 +252,79 @@ async function waitForInstagramContainer(containerId) {
     );
 
     const statusCode = statusResponse.data?.status_code;
-    console.log(`Instagram container status attempt ${attempt}:`, statusCode || 'unknown');
+    console.log(`⏳ Instagram container status attempt ${attempt}:`, statusCode || 'unknown');
 
-    if (statusCode === 'FINISHED') return true;
+    if (statusCode === 'FINISHED' || statusCode === 'READY') return true;
     if (statusCode === 'ERROR' || statusCode === 'EXPIRED') {
-      throw new Error(`Instagram video processing failed: ${statusCode}`);
+      throw new Error(`Instagram container processing failed: ${statusCode}`);
     }
 
     await new Promise(resolve => setTimeout(resolve, 3000));
   }
 
-  throw new Error('Instagram video container did not finish processing in time');
+  throw new Error('Instagram container did not become ready in time');
 }
+
+// ─────────────────────────────────────────────
+// IMAGE PROXY ROUTE
+// Instagram calls this URL to fetch the image.
+// We download from Content Hub, resize with sharp,
+// and stream back as a public JPEG — no second cloud needed.
+//
+// GET /api/instagram/image-proxy/:assetId
+// ─────────────────────────────────────────────
+app.get('/api/instagram/image-proxy/:assetId', async (req, res) => {
+  const { assetId } = req.params;
+  const sourceSystem = req.query.source || CONTENT_HUB_URL;
+
+  console.log(`🖼️ Image proxy request for asset: ${assetId}`);
+
+  try {
+    const token = await getContentHubToken(sourceSystem);
+    if (!token) {
+      return res.status(500).send('Failed to authenticate with Content Hub');
+    }
+
+    // Fetch entity to get rendition URL
+    const response = await axios.get(
+      `${sourceSystem}/api/entities/${assetId}`,
+      { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' } }
+    );
+
+    const entity = response.data;
+    const renditions = entity?.renditions;
+
+    if (!renditions) {
+      return res.status(404).send('No renditions found for asset');
+    }
+
+    const renditionKey = renditions.downloadOriginal
+      ? 'downloadOriginal'
+      : renditions.original
+      ? 'original'
+      : Object.keys(renditions)[0];
+
+    const imageUrl = renditions[renditionKey]?.[0]?.href;
+    if (!imageUrl) {
+      return res.status(404).send('No image URL found in renditions');
+    }
+
+    // Download and resize
+    const resizedBuffer = await downloadAndResize(imageUrl, token);
+
+    // Stream back as public JPEG — Instagram fetches this URL directly
+    res.set('Content-Type', 'image/jpeg');
+    res.set('Content-Length', resizedBuffer.length);
+    res.set('Cache-Control', 'public, max-age=3600'); // cache 1hr
+    res.send(resizedBuffer);
+
+    console.log(`✅ Image proxy served for asset ${assetId}: ${resizedBuffer.length} bytes`);
+
+  } catch (err) {
+    console.error('❌ Image proxy error:', err.message);
+    res.status(500).send('Failed to proxy image');
+  }
+});
 
 // ─────────────────────────────────────────────
 // GET — test connection (mirrors LinkedIn GET /linkedin/publish)
@@ -312,36 +365,31 @@ app.post('/api/instagram/publish-image', async (req, res) => {
   console.log('✅ Asset ID:', assetId);
   console.log('✅ Source System:', sourceSystem);
 
-  // ── Fetch asset details from Content Hub ──
-  let caption = context.caption || null;
-  let imageUrl = null;
-  let imageToken = null;
-
-  if (assetId && sourceSystem && CONTENT_HUB_USERNAME && CONTENT_HUB_PASSWORD) {
-    const assetDetails = await getAssetDetails(assetId, sourceSystem);
-
-    // Priority: SocialPostCaption > Title (identical to LinkedIn)
-    if (assetDetails.socialCaption) {
-      caption = assetDetails.socialCaption;
-      console.log('✅ Using SocialPostCaption for caption');
-    } else if (!caption || caption === '{Title}') {
-      caption = assetDetails.title;
-      console.log('✅ Using Title for caption');
-    }
-
-    imageUrl = assetDetails.imageUrl;
-    imageToken = assetDetails.imageToken;
+  if (!assetId) {
+    return res.status(400).json({ error: 'No asset ID provided', hint: 'Send target_id in headers' });
   }
 
-  // ── Final fallback ──
+  // ── Fetch asset details from Content Hub ──
+  let caption = context.caption || null;
+
+  const assetDetails = await getAssetDetails(assetId, sourceSystem);
+
+  // Priority: SocialPostCaption > Title (identical to LinkedIn)
+  if (assetDetails.socialCaption) {
+    caption = assetDetails.socialCaption;
+    console.log('✅ Using SocialPostCaption for caption');
+  } else if (!caption || caption === '{Title}') {
+    caption = assetDetails.title;
+    console.log('✅ Using Title for caption');
+  }
+
   if (!caption) {
     caption = 'New content published from Sitecore Content Hub';
   }
 
   console.log('✅ Final Caption:', caption);
-  console.log('✅ Image URL:', imageUrl || 'none');
 
-  if (!imageUrl) {
+  if (!assetDetails.imageUrl) {
     return res.status(400).json({
       error: 'No image URL found for asset',
       assetId,
@@ -350,15 +398,19 @@ app.post('/api/instagram/publish-image', async (req, res) => {
   }
 
   try {
-    // ── Step 1: Download, resize, upload to Vercel Blob → get public URL ──
-    const publicImageUrl = await prepareImageForInstagram(imageUrl, imageToken, assetId);
+    // ── Build proxy URL — Instagram fetches this to get the image ──
+    // Your Vercel function IS the public server, so we proxy through it.
+    const vercelBaseUrl = `https://${req.headers.host}`;
+    const proxyUrl = `${vercelBaseUrl}/api/instagram/image-proxy/${assetId}?source=${encodeURIComponent(sourceSystem)}`;
 
-    // ── Step 2: Create Instagram media container with public URL ──
+    console.log('✅ Proxy URL for Instagram:', proxyUrl);
+
+    // ── Step 1: Create Instagram media container using proxy URL ──
     console.log('📤 Creating Instagram media container...');
     const containerResponse = await axios.post(
       `${INSTAGRAM_GRAPH_URL}/${INSTAGRAM_BUSINESS_ACCOUNT_ID}/media`,
       {
-        image_url: publicImageUrl,  // ✅ Public Vercel Blob URL
+        image_url: proxyUrl,   // ✅ Public proxy URL — no second cloud
         caption: caption,
         media_type: 'IMAGE',
         access_token: INSTAGRAM_ACCESS_TOKEN,
@@ -366,14 +418,13 @@ app.post('/api/instagram/publish-image', async (req, res) => {
     );
 
     const containerId = containerResponse.data.id;
-console.log('✅ Container created:', containerId);
+    console.log('✅ Container created:', containerId);
 
-// ── Step 2.5: Wait for Instagram to process the image container ──
-// (mirrors waitForLinkedInAsset — Instagram needs time even for images)
-console.log('⏳ Waiting for Instagram image container to be ready...');
-await waitForInstagramContainer(containerId);
+    // ── Step 2: Wait for Instagram to process the image ──
+    console.log('⏳ Waiting for Instagram image container to be ready...');
+    await waitForInstagramContainer(containerId);
 
-// ── Step 3: Publish the container ──
+    // ── Step 3: Publish the container ──
     const publishResponse = await axios.post(
       `${INSTAGRAM_GRAPH_URL}/${INSTAGRAM_BUSINESS_ACCOUNT_ID}/media_publish`,
       {
@@ -432,32 +483,23 @@ app.post('/api/instagram/publish-video', async (req, res) => {
   console.log('✅ Source System:', sourceSystem);
 
   let caption = context.caption || null;
-  let videoUrl = null;
-  let videoToken = null;
 
-  if (assetId && sourceSystem && CONTENT_HUB_USERNAME && CONTENT_HUB_PASSWORD) {
-    const assetDetails = await getAssetDetails(assetId, sourceSystem);
+  const assetDetails = await getAssetDetails(assetId, sourceSystem);
 
-    if (assetDetails.socialCaption) {
-      caption = assetDetails.socialCaption;
-      console.log('✅ Using SocialPostCaption for caption');
-    } else if (!caption || caption === '{Title}') {
-      caption = assetDetails.title;
-      console.log('✅ Using Title for caption');
-    }
-
-    videoUrl = assetDetails.videoUrl;
-    videoToken = assetDetails.imageToken;
+  if (assetDetails.socialCaption) {
+    caption = assetDetails.socialCaption;
+    console.log('✅ Using SocialPostCaption for caption');
+  } else if (!caption || caption === '{Title}') {
+    caption = assetDetails.title;
+    console.log('✅ Using Title for caption');
   }
 
-  if (!caption) {
-    caption = 'New content published from Sitecore Content Hub';
-  }
+  if (!caption) caption = 'New content published from Sitecore Content Hub';
 
   console.log('✅ Final Caption:', caption);
-  console.log('✅ Video URL:', videoUrl || 'none');
+  console.log('✅ Video URL:', assetDetails.videoUrl || 'none');
 
-  if (!videoUrl) {
+  if (!assetDetails.videoUrl) {
     return res.status(400).json({
       error: 'No video URL found for asset',
       assetId,
@@ -466,12 +508,11 @@ app.post('/api/instagram/publish-video', async (req, res) => {
   }
 
   try {
-    // ── Step 1: Create media container for video ──
     console.log('📤 Creating Instagram video media container...');
     const containerResponse = await axios.post(
       `${INSTAGRAM_GRAPH_URL}/${INSTAGRAM_BUSINESS_ACCOUNT_ID}/media`,
       {
-        video_url: videoUrl,
+        video_url: assetDetails.videoUrl,
         caption: caption,
         media_type: 'REELS',
         access_token: INSTAGRAM_ACCESS_TOKEN,
@@ -481,11 +522,9 @@ app.post('/api/instagram/publish-video', async (req, res) => {
     const containerId = containerResponse.data.id;
     console.log('✅ Video container created:', containerId);
 
-    // ── Step 2: Wait for Instagram to process video ──
     console.log('⏳ Waiting for Instagram to process video...');
     await waitForInstagramContainer(containerId);
 
-    // ── Step 3: Publish the container ──
     const publishResponse = await axios.post(
       `${INSTAGRAM_GRAPH_URL}/${INSTAGRAM_BUSINESS_ACCOUNT_ID}/media_publish`,
       {
@@ -523,20 +562,11 @@ app.post('/api/instagram/publish-video', async (req, res) => {
 app.get('/api/instagram/insights', async (req, res) => {
   try {
     const { metric = 'impressions,reach,profile_views' } = req.query;
-
     const insightsResponse = await axios.get(
       `${INSTAGRAM_GRAPH_URL}/${INSTAGRAM_BUSINESS_ACCOUNT_ID}/insights`,
-      {
-        params: { metric, period: 'day', access_token: INSTAGRAM_ACCESS_TOKEN },
-      }
+      { params: { metric, period: 'day', access_token: INSTAGRAM_ACCESS_TOKEN } }
     );
-
-    res.json({
-      success: true,
-      insights: insightsResponse.data.data,
-      timestamp: new Date().toISOString(),
-    });
-
+    res.json({ success: true, insights: insightsResponse.data.data, timestamp: new Date().toISOString() });
   } catch (err) {
     console.error('❌ Instagram insights error:', err.response?.data || err.message);
     res.status(500).json({ error: 'Failed to fetch Instagram insights', details: err.response?.data?.error || err.message });
@@ -549,7 +579,6 @@ app.get('/api/instagram/insights', async (req, res) => {
 app.post('/api/instagram/refresh-token', async (req, res) => {
   try {
     const { userAccessToken } = req.body;
-
     const refreshResponse = await axios.get(
       `${INSTAGRAM_GRAPH_URL}/access_token`,
       {
@@ -560,7 +589,6 @@ app.post('/api/instagram/refresh-token', async (req, res) => {
         },
       }
     );
-
     console.log('✅ Instagram token refreshed successfully');
     res.json({
       success: true,
@@ -568,7 +596,6 @@ app.post('/api/instagram/refresh-token', async (req, res) => {
       expiresIn: refreshResponse.data.expires_in,
       message: 'Token refreshed successfully. Valid for 60 days.',
     });
-
   } catch (err) {
     console.error('❌ Token refresh error:', err.response?.data || err.message);
     res.status(500).json({ error: 'Failed to refresh access token', details: err.response?.data?.error || err.message });
@@ -582,7 +609,6 @@ app.get('/api/instagram/webhook', (req, res) => {
   const verifyToken = process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN || 'sitecore_content_hub_webhook';
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-
   if (token === verifyToken) {
     console.log('✅ Instagram webhook verified');
     res.send(challenge);
@@ -600,11 +626,7 @@ app.post('/api/instagram/webhook', (req, res) => {
   if (entry) {
     entry.forEach((item) => {
       const { messaging } = item;
-      if (messaging) {
-        messaging.forEach((event) => {
-          console.log('Instagram webhook event received:', event);
-        });
-      }
+      if (messaging) messaging.forEach((event) => console.log('Instagram webhook event:', event));
     });
   }
   res.status(200).send('Event received');
