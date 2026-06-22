@@ -178,8 +178,8 @@ async function getAssetDetails(assetId, contentHubBaseUrl) {
     const renditions = entity?.renditions;
 
     if (renditions && typeof renditions === 'object') {
-      console.log(`✅ Image rendition selected: ${renditions.downloadOriginal[0].href}`);
-      imageUrl = renditions.downloadOriginal[0].href;
+      imageUrl = renditions.downloadOriginal?.[0]?.href || renditions.downloadOriginal?.[0]?.url || null;
+      console.log(`✅ Image rendition selected: ${imageUrl}`);
     }
 
     if (!imageUrl) {

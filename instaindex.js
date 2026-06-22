@@ -137,7 +137,7 @@ async function getAssetDetails(assetId, contentHubBaseUrl) {
     const renditions = entity?.renditions;
 
     if (renditions && typeof renditions === 'object') {
-      const downloadHref = renditions.downloadOriginal?.[0]?.href || null;
+      const downloadHref = renditions.bigthumbnail?.[0]?.href || renditions.bigthumbnail?.[0]?.url || null;
       console.log(`✅ Rendition selected: ${downloadHref}`);
 
       if (mediaType === 'VIDEO') {
