@@ -283,35 +283,59 @@ async function uploadImageToLinkedIn(imageUrl, imageToken, accessToken, memberId
 }
 
 async function waitForLinkedInAsset(assetUrn, accessToken) {
+
   const encodedAssetUrn = encodeURIComponent(assetUrn);
 
-  for (let attempt = 1; attempt <= 10; attempt += 1) {
+  for (let attempt = 1; attempt <= 15; attempt++) {
+
+    console.log(`⏳ Checking LinkedIn asset status (${attempt})`);
+
     const response = await axios.get(
       `https://api.linkedin.com/v2/assets/${encodedAssetUrn}`,
       {
         headers: {
           Authorization: `Bearer ${accessToken}`,
           'X-Restli-Protocol-Version': '2.0.0'
-        },
-        timeout: 10000
+        }
       }
     );
 
-    const status = response.data?.recipes?.[0]?.status || response.data?.status;
-    console.log(`LinkedIn asset status attempt ${attempt}:`, status || 'unknown');
+    console.log('📦 Asset status response:', JSON.stringify(response.data));
 
-    if (!status || status === 'AVAILABLE' || status === 'READY') {
+    const assetData = response.data;
+
+    const recipeStatus =
+      assetData?.recipes?.[0]?.status;
+
+    const overallStatus =
+      assetData?.status;
+
+    const mediaStatus =
+      assetData?.mediaArtifact?.status;
+
+    console.log(
+      'Statuses:',
+      recipeStatus,
+      overallStatus,
+      mediaStatus
+    );
+
+    const isReady =
+      recipeStatus === 'AVAILABLE' ||
+      recipeStatus === 'READY' ||
+      overallStatus === 'ALLOWED' ||
+      overallStatus === 'AVAILABLE' ||
+      mediaStatus === 'AVAILABLE';
+
+    if (isReady) {
+      console.log('✅ LinkedIn asset is READY');
       return true;
     }
 
-    if (status === 'PROCESSING_FAILED' || status === 'FAILED') {
-      throw new Error(`LinkedIn image processing failed: ${status}`);
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await new Promise(resolve => setTimeout(resolve, 3000));
   }
 
-  throw new Error('LinkedIn image was uploaded but did not become available in time');
+  throw new Error('LinkedIn asset processing timeout');
 }
 
 // ─────────────────────────────────────────────
@@ -576,6 +600,7 @@ if (assetIds.length === 0) {
 
       if (assetUrn) {
         await waitForLinkedInAsset(assetUrn, accessToken);
+        await new Promise(resolve => setTimeout(resolve, 2000));
         mediaArray.push({
           status: 'READY',
           description: { text: shareCommentary },
@@ -605,7 +630,10 @@ if (assetIds.length === 0) {
         'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC'
       }
     };
-
+console.log(
+  '✅ Final media array:',
+  JSON.stringify(mediaArray, null, 2)
+);
     const postResponse = await axios.post(
       'https://api.linkedin.com/v2/ugcPosts',
       postBody,
