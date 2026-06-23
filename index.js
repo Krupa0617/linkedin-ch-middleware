@@ -541,11 +541,11 @@ const campaignResponse = await axios.get(
   `${sourceSystem}/api/entities/${campaignId}`,
   { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' } }
 );
-    const caption = campaignResponse.data?.properties?.Title || 'Campaign post from Sitecore Content Hub';
+    const caption = campaignResponse.data?.properties?.SocialPostCaption || 'Campaign post from Sitecore Content Hub';
    const campaign = campaignResponse.data;
 
 const shareCommentary =
-  campaign?.properties?.Title ||
+  campaign?.properties?.SocialPostCaption ||
   'Campaign post from Sitecore Content Hub';
 
 console.log('✅ Found', assetIds.length, 'assets in campaign');

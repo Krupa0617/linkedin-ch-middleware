@@ -710,7 +710,7 @@ app.post('/api/instagram/publish-carousel', async (req, res) => {
       `${sourceSystem}/api/entities/${campaignId}`,
       { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' } }
     );
-    const caption = campaignResponse.data?.properties?.Title || 'Campaign post from Sitecore Content Hub';
+    const caption = campaignResponse.data?.properties?.SocialPostCaption || 'Campaign post from Sitecore Content Hub';
 
     // Step 4: Build proxy URLs for each asset (max 10 for Instagram)
     const vercelBaseUrl = `https://${req.headers.host}`;
