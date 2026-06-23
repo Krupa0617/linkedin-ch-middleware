@@ -497,7 +497,7 @@ app.post('/api/linkedin/publish-campaign', async (req, res) => {
   if (!memberId) return res.status(500).json({ error: 'LINKEDIN_MEMBER_ID not configured' });
 
   const saveMsg = req.body.saveEntityMessage || {};
-  const campaignId = req.headers['entity_id'] || saveMsg.entity_id;
+  const campaignId = req.headers['target_id'] || saveMsg.entity_id;
   const sourceSystem = req.headers['source_system'] || CONTENT_HUB_URL;
 
   console.log('✅ Campaign ID:', campaignId);
