@@ -656,10 +656,10 @@ app.use((err, req, res, next) => {
 
 // ─────────────────────────────────────────────
 // PUBLISH CAROUSEL — multiple assets from campaign
-// POST /api/instagram/publish-carousel
+// POST /api/instagram/publish-campaign
 // ─────────────────────────────────────────────
-app.post('/api/instagram/publish-carousel', async (req, res) => {
-  console.log('📢 Incoming Instagram carousel publish request');
+app.post('/api/instagram/publish-campaign', async (req, res) => {
+  console.log('📢 Incoming Instagram campaign publish request');
   console.log('Body:', JSON.stringify(req.body));
 
   const apiKey = req.headers['x-api-key'];

@@ -478,11 +478,11 @@ app.post('/linkedin/publish', async (req, res) => {
 
 
 // ─────────────────────────────────────────────
-// PUBLISH CAROUSEL — multiple assets from campaign
-// POST /api/linkedin/publish-carousel
+// PUBLISH campaign — multiple assets from campaign
+// POST /api/linkedin/publish-campaign
 // ─────────────────────────────────────────────
-app.post('/api/linkedin/publish-carousel', async (req, res) => {
-  console.log('📢 Incoming LinkedIn carousel publish request');
+app.post('/api/linkedin/publish-campaign', async (req, res) => {
+  console.log('📢 Incoming LinkedIn campaign publish request');
   console.log('Body:', JSON.stringify(req.body));
 
   const apiKey = req.headers['x-api-key'];
