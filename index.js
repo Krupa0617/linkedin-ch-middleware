@@ -198,86 +198,74 @@ async function getAssetDetails(assetId, contentHubBaseUrl) {
 // Helper: Upload image to LinkedIn
 // ✅ FIXED: Pass token for authenticated image download
 // ─────────────────────────────────────────────
-async function uploadImageToLinkedIn(imageUrl, imageToken, accessToken, memberId) {
-  try {
-    console.log('🖼️ Starting LinkedIn image upload...');
-    console.log('🖼️ Image URL:', imageUrl);
+async function uploadImageToLinkedIn(
+  imageUrl,
+  imageToken,
+  accessToken,
+  memberId
+) {
 
-    // Step A: Register upload with LinkedIn
+  try {
+
+    // STEP 1: Register upload
     const registerResponse = await axios.post(
-      'https://api.linkedin.com/v2/assets?action=registerUpload',
+      'https://api.linkedin.com/rest/images?action=initializeUpload',
       {
-        registerUploadRequest: {
-          recipes: ['urn:li:digitalmediaRecipe:feedshare-image'],
-          owner: `urn:li:person:${memberId}`,
-          serviceRelationships: [
-            {
-              relationshipType: 'OWNER',
-              identifier: 'urn:li:userGeneratedContent'
-            }
-          ]
+        initializeUploadRequest: {
+          owner: `urn:li:person:${memberId}`
         }
       },
       {
         headers: {
           Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-          'X-Restli-Protocol-Version': '2.0.0'
+          'LinkedIn-Version': '202401',
+          'X-Restli-Protocol-Version': '2.0.0',
+          'Content-Type': 'application/json'
         }
       }
     );
 
-    const uploadUrl = registerResponse.data.value.uploadMechanism[
-      'com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest'
-    ].uploadUrl;
-    const assetUrn = registerResponse.data.value.asset;
+    const uploadUrl =
+      registerResponse.data.value.uploadUrl;
 
-    console.log('✅ LinkedIn upload URL obtained');
-    console.log('✅ LinkedIn Asset URN:', assetUrn);
+    const imageUrn =
+      registerResponse.data.value.image;
 
-    // Step B: Download image from Content Hub WITH auth token
-    console.log('📥 Downloading image from Content Hub...');
+    console.log('✅ LinkedIn Image URN:', imageUrn);
+
+    // STEP 2: Download image
     const imageResponse = await axios.get(imageUrl, {
       responseType: 'arraybuffer',
       headers: {
         'X-Auth-Token': imageToken
-      },
-      maxContentLength: 20 * 1024 * 1024,
-      timeout: 30000
+      }
     });
 
     const imageBuffer = Buffer.from(imageResponse.data);
-    const imageContentType = imageResponse.headers['content-type'] || '';
-    console.log('✅ Image downloaded:', imageBuffer.length, 'bytes');
-    console.log('✅ Image content type:', imageContentType);
 
-    if (imageBuffer.length === 0) {
-      console.error('❌ Downloaded image buffer is empty!');
-      return null;
-    }
-
-    if (!imageContentType.startsWith('image/')) {
-      console.error('❌ Content Hub download did not return an image:', imageContentType);
-      return null;
-    }
-
-    // Step C: Upload to LinkedIn
-    console.log('📤 Uploading to LinkedIn...');
-    console.log('📤 Upload URL:', uploadUrl);
+    // STEP 3: Upload binary
     await axios.put(uploadUrl, imageBuffer, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        'Content-Type': imageContentType
+        'Content-Type': imageResponse.headers['content-type']
       },
-      maxContentLength: 20 * 1024 * 1024,
-      timeout: 30000
+      maxBodyLength: Infinity
     });
 
-    console.log('✅ Image uploaded to LinkedIn successfully!');
-    return assetUrn;
+    console.log('✅ Image uploaded');
+
+    // IMPORTANT WAIT
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    return imageUrn;
 
   } catch (err) {
-    console.error('❌ Image upload failed:', err.response?.status, err.response?.data || err.message);
+
+    console.error(
+      '❌ LinkedIn image upload failed:',
+      err.response?.data || err.message
+    );
+
     return null;
   }
 }
@@ -599,14 +587,12 @@ if (assetIds.length === 0) {
       );
 
       if (assetUrn) {
-        await waitForLinkedInAsset(assetUrn, accessToken);
+        // await waitForLinkedInAsset(assetUrn, accessToken);
         await new Promise(resolve => setTimeout(resolve, 2000));
-        mediaArray.push({
-          status: 'READY',
-          description: { text: shareCommentary },
-          media: assetUrn,
-          title: { text: assetDetails.title || shareCommentary }
-        });
+       mediaArray.push({
+  status: 'READY',
+  media: imageUrn
+});
         console.log(`✅ Asset ${assetId} uploaded: ${assetUrn}`);
       }
     }
@@ -616,20 +602,22 @@ if (assetIds.length === 0) {
     }
 
     // Step 4: Post carousel to LinkedIn
-    const postBody = {
-      author: `urn:li:person:${memberId}`,
-      lifecycleState: 'PUBLISHED',
-      specificContent: {
-        'com.linkedin.ugc.ShareContent': {
-          shareCommentary: { text: shareCommentary },
-          shareMediaCategory: 'IMAGE',
-          media: mediaArray
-        }
+   const postBody = {
+  author: `urn:li:person:${memberId}`,
+  lifecycleState: 'PUBLISHED',
+  specificContent: {
+    'com.linkedin.ugc.ShareContent': {
+      shareCommentary: {
+        text: shareCommentary
       },
-      visibility: {
-        'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC'
-      }
-    };
+      shareMediaCategory: 'IMAGE',
+      media: mediaArray
+    }
+  },
+  visibility: {
+    'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC'
+  }
+};
 console.log(
   '✅ Final media array:',
   JSON.stringify(mediaArray, null, 2)
