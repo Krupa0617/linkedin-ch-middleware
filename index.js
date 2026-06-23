@@ -575,7 +575,7 @@ if (assetIds.length === 0) {
       );
 
       if (assetUrn) {
-        await waitForLinkedInAsset(assetUrn, accessToken);
+        // await waitForLinkedInAsset(assetUrn, accessToken);
         mediaArray.push({
           status: 'READY',
           description: { text: shareCommentary },
