@@ -218,7 +218,7 @@ async function uploadImageToLinkedIn(
       {
         headers: {
           Authorization: `Bearer ${accessToken}`,
-          'LinkedIn-Version': '202401',
+          'LinkedIn-Version': '202505',
           'X-Restli-Protocol-Version': '2.0.0',
           'Content-Type': 'application/json'
         }
@@ -591,7 +591,7 @@ if (assetIds.length === 0) {
         await new Promise(resolve => setTimeout(resolve, 2000));
        mediaArray.push({
   status: 'READY',
-  media: imageUrn
+  media: assetUrn
 });
         console.log(`✅ Asset ${assetId} uploaded: ${assetUrn}`);
       }
