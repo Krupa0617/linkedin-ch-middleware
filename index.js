@@ -542,15 +542,19 @@ const campaignResponse = await axios.get(
   { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' } }
 );
     const caption = campaignResponse.data?.properties?.Title || 'Campaign post from Sitecore Content Hub';
-    const campaign = campaignResponse.data;
-    const shareCommentary = campaign?.properties?.Title || 'Campaign post from Sitecore Content Hub';
-    const memberItems = campaign?.relations?.CampaignContent?.items || [];
+   const campaign = campaignResponse.data;
 
-    console.log('✅ Found', memberItems.length, 'assets in campaign');
+const shareCommentary =
+  campaign?.properties?.Title ||
+  'Campaign post from Sitecore Content Hub';
 
-    if (memberItems.length === 0) {
-      return res.status(400).json({ error: 'No assets found in campaign' });
-    }
+console.log('✅ Found', assetIds.length, 'assets in campaign');
+
+if (assetIds.length === 0) {
+  return res.status(400).json({
+    error: 'No assets found in campaign'
+  });
+}
 
     // Step 3: Upload each asset to LinkedIn (max 20)
     const mediaArray = [];
