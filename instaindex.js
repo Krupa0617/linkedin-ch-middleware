@@ -685,48 +685,32 @@ app.post('/api/instagram/publish-carousel', async (req, res) => {
     const token = await getContentHubToken(sourceSystem);
     if (!token) return res.status(500).json({ error: 'Content Hub auth failed' });
 
-    // Step 2: Fetch campaign entity to get linked assets
-    // const campaignResponse = await axios.get(
-    //   `${sourceSystem}/api/entities/${campaignId}?members=CampaignContent`,
-    //   { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' } }
-    // );
     // Step 2: Fetch asset IDs from campaign selection pool
-const selectionResponse = await axios.get(
-  `${sourceSystem}/api/selection/SelectionPool.ContentCampaignDetail/`,
-  {
-    params: {
-      ignorePermissions: false,
-      definitionNames: 'M.Content,M.Asset,M.Deliverable',
-      subPoolId: campaignId
-    },
-    headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' }
-  }
-);
+    const selectionResponse = await axios.get(
+      `${sourceSystem}/api/selection/SelectionPool.ContentCampaignDetail/`,
+      {
+        params: {
+          ignorePermissions: false,
+          definitionNames: 'M.Content,M.Asset,M.Deliverable',
+          subPoolId: campaignId
+        },
+        headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' }
+      }
+    );
 
-const assetIds = selectionResponse.data?.['M.Asset']?.items || [];
-console.log('✅ Found asset IDs from selection pool:', assetIds);
+    const assetIds = selectionResponse.data?.['M.Asset']?.items || [];
+    console.log('✅ Found asset IDs from selection pool:', assetIds);
 
-if (assetIds.length === 0) {
-  return res.status(400).json({ error: 'No assets found in campaign selection pool' });
-}
-
-// Get campaign title for caption
-const campaignResponse = await axios.get(
-  `${sourceSystem}/api/entities/${campaignId}`,
-  { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' } }
-);
-const caption = campaignResponse.data?.properties?.Title || 'Campaign post from Sitecore Content Hub';
-
-    const campaign = campaignResponse.data;
-    const caption = campaign?.properties?.Title || 'Campaign post from Sitecore Content Hub';
-
-    // Step 3: Get asset IDs from campaign relation
-    const memberItems = campaign?.relations?.CampaignContent?.items || [];
-    console.log('✅ Found', memberItems.length, 'assets in campaign');
-
-    if (memberItems.length === 0) {
-      return res.status(400).json({ error: 'No assets found in campaign' });
+    if (assetIds.length === 0) {
+      return res.status(400).json({ error: 'No assets found in campaign selection pool' });
     }
+
+    // Step 3: Get campaign title for caption
+    const campaignResponse = await axios.get(
+      `${sourceSystem}/api/entities/${campaignId}`,
+      { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' } }
+    );
+    const caption = campaignResponse.data?.properties?.Title || 'Campaign post from Sitecore Content Hub';
 
     // Step 4: Build proxy URLs for each asset (max 10 for Instagram)
     const vercelBaseUrl = `https://${req.headers.host}`;
@@ -734,7 +718,7 @@ const caption = campaignResponse.data?.properties?.Title || 'Campaign post from 
 
     // Step 5: Create individual media containers for each asset
     const childContainerIds = [];
-   for (const assetId of assetSlice) {
+    for (const assetId of assetSlice) {
       const proxyUrl = `${vercelBaseUrl}/api/instagram/image-proxy/${assetId}?source=${encodeURIComponent(sourceSystem)}`;
 
       console.log(`📤 Creating container for asset ${assetId}`);
@@ -797,7 +781,5 @@ const caption = campaignResponse.data?.properties?.Title || 'Campaign post from 
     });
   }
 });
-
-// ✅ No app.listen() — Vercel handles this directly via vercel.json build
 
 export default app;

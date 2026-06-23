@@ -1,14 +1,14 @@
 {
   "version": 2,
   "builds": [
-    { "src": "index.js",      "use": "@vercel/node" },
-    { "src": "instaindex.js", "use": "@vercel/node" }
+    { "src": "api/linkedin.js", "use": "@vercel/node" },
+    { "src": "api/instagram.js", "use": "@vercel/node" }
   ],
   "routes": [
-    { "src": "/api/instagram/(.*)", "dest": "instaindex.js" },
-    { "src": "/api/linkedin/(.*)", "dest": "index.js" },
-    { "src": "/auth/linkedin/(.*)", "dest": "index.js" },
-    { "src": "/linkedin/(.*)",      "dest": "index.js" },
-    { "src": "/(.*)",               "dest": "index.js" }
+    { "src": "/api/instagram/(.*)", "dest": "api/instagram.js" },
+    { "src": "/api/linkedin/(.*)", "dest": "api/linkedin.js" },
+    { "src": "/auth/linkedin/(.*)", "dest": "api/linkedin.js" },
+    { "src": "/linkedin/(.*)", "dest": "api/linkedin.js" },
+    { "src": "/(.*)", "dest": "api/linkedin.js" }
   ]
 }
