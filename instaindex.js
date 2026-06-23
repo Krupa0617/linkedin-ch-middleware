@@ -671,7 +671,7 @@ app.post('/api/instagram/publish-campaign', async (req, res) => {
   if (!INSTAGRAM_BUSINESS_ACCOUNT_ID) return res.status(500).json({ error: 'INSTAGRAM_BUSINESS_ACCOUNT_ID not configured' });
 
   const saveMsg = req.body.saveEntityMessage || {};
-  const campaignId = req.headers['entity_id'] || saveMsg.entity_id;
+  const campaignId = req.headers['target_id'] || saveMsg.target_id;
   const sourceSystem = req.headers['source_system'] || CONTENT_HUB_URL;
 
   console.log('✅ Campaign ID:', campaignId);
