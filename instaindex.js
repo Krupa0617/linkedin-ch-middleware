@@ -653,6 +653,151 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error', message: err.message });
 });
 
+
+// ─────────────────────────────────────────────
+// PUBLISH CAROUSEL — multiple assets from campaign
+// POST /api/instagram/publish-carousel
+// ─────────────────────────────────────────────
+app.post('/api/instagram/publish-carousel', async (req, res) => {
+  console.log('📢 Incoming Instagram carousel publish request');
+  console.log('Body:', JSON.stringify(req.body));
+
+  const apiKey = req.headers['x-api-key'];
+  if (!apiKey || apiKey !== API_SECRET_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  if (!INSTAGRAM_ACCESS_TOKEN) return res.status(500).json({ error: 'INSTAGRAM_ACCESS_TOKEN not configured' });
+  if (!INSTAGRAM_BUSINESS_ACCOUNT_ID) return res.status(500).json({ error: 'INSTAGRAM_BUSINESS_ACCOUNT_ID not configured' });
+
+  const saveMsg = req.body.saveEntityMessage || {};
+  const campaignId = req.headers['target_id'] || saveMsg.TargetId;
+  const sourceSystem = req.headers['source_system'] || CONTENT_HUB_URL;
+
+  console.log('✅ Campaign ID:', campaignId);
+
+  if (!campaignId) {
+    return res.status(400).json({ error: 'No campaign ID provided' });
+  }
+
+  try {
+    // Step 1: Auth with Content Hub
+    const token = await getContentHubToken(sourceSystem);
+    if (!token) return res.status(500).json({ error: 'Content Hub auth failed' });
+
+    // Step 2: Fetch campaign entity to get linked assets
+    // const campaignResponse = await axios.get(
+    //   `${sourceSystem}/api/entities/${campaignId}?members=CampaignContent`,
+    //   { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' } }
+    // );
+    // Step 2: Fetch asset IDs from campaign selection pool
+const selectionResponse = await axios.get(
+  `${sourceSystem}/api/selection/SelectionPool.ContentCampaignDetail/`,
+  {
+    params: {
+      ignorePermissions: false,
+      definitionNames: 'M.Content,M.Asset,M.Deliverable',
+      subPoolId: campaignId
+    },
+    headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' }
+  }
+);
+
+const assetIds = selectionResponse.data?.['M.Asset']?.items || [];
+console.log('✅ Found asset IDs from selection pool:', assetIds);
+
+if (assetIds.length === 0) {
+  return res.status(400).json({ error: 'No assets found in campaign selection pool' });
+}
+
+// Get campaign title for caption
+const campaignResponse = await axios.get(
+  `${sourceSystem}/api/entities/${campaignId}`,
+  { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' } }
+);
+const caption = campaignResponse.data?.properties?.Title || 'Campaign post from Sitecore Content Hub';
+
+    const campaign = campaignResponse.data;
+    const caption = campaign?.properties?.Title || 'Campaign post from Sitecore Content Hub';
+
+    // Step 3: Get asset IDs from campaign relation
+    const memberItems = campaign?.relations?.CampaignContent?.items || [];
+    console.log('✅ Found', memberItems.length, 'assets in campaign');
+
+    if (memberItems.length === 0) {
+      return res.status(400).json({ error: 'No assets found in campaign' });
+    }
+
+    // Step 4: Build proxy URLs for each asset (max 10 for Instagram)
+    const vercelBaseUrl = `https://${req.headers.host}`;
+    const assetSlice = assetIds.slice(0, 10);
+
+    // Step 5: Create individual media containers for each asset
+    const childContainerIds = [];
+   for (const assetId of assetSlice) {
+      const proxyUrl = `${vercelBaseUrl}/api/instagram/image-proxy/${assetId}?source=${encodeURIComponent(sourceSystem)}`;
+
+      console.log(`📤 Creating container for asset ${assetId}`);
+      const containerRes = await axios.post(
+        `${INSTAGRAM_GRAPH_URL}/${INSTAGRAM_BUSINESS_ACCOUNT_ID}/media`,
+        {
+          image_url: proxyUrl,
+          is_carousel_item: true,
+          access_token: INSTAGRAM_ACCESS_TOKEN,
+        }
+      );
+      childContainerIds.push(containerRes.data.id);
+      console.log(`✅ Container created: ${containerRes.data.id}`);
+    }
+
+    // Step 6: Create carousel container
+    console.log('📤 Creating carousel container...');
+    const carouselRes = await axios.post(
+      `${INSTAGRAM_GRAPH_URL}/${INSTAGRAM_BUSINESS_ACCOUNT_ID}/media`,
+      {
+        media_type: 'CAROUSEL',
+        caption: caption,
+        children: childContainerIds.join(','),
+        access_token: INSTAGRAM_ACCESS_TOKEN,
+      }
+    );
+
+    const carouselContainerId = carouselRes.data.id;
+    console.log('✅ Carousel container created:', carouselContainerId);
+
+    // Step 7: Wait for carousel to be ready
+    await waitForInstagramContainer(carouselContainerId);
+
+    // Step 8: Publish
+    const publishRes = await axios.post(
+      `${INSTAGRAM_GRAPH_URL}/${INSTAGRAM_BUSINESS_ACCOUNT_ID}/media_publish`,
+      {
+        creation_id: carouselContainerId,
+        access_token: INSTAGRAM_ACCESS_TOKEN,
+      }
+    );
+
+    const postId = publishRes.data.id;
+    console.log('✅ Instagram carousel published! Post ID:', postId);
+
+    res.json({
+      success: true,
+      postId,
+      caption,
+      assetCount: childContainerIds.length,
+      message: 'Successfully published carousel to Instagram',
+      timestamp: new Date().toISOString(),
+    });
+
+  } catch (err) {
+    console.error('❌ Instagram carousel publish failed:', err.response?.data || err.message);
+    res.status(500).json({
+      error: 'Failed to publish carousel to Instagram',
+      details: err.response?.data?.error || err.message,
+    });
+  }
+});
+
 // ✅ No app.listen() — Vercel handles this directly via vercel.json build
 
 export default app;

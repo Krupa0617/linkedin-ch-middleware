@@ -476,6 +476,163 @@ app.post('/linkedin/publish', async (req, res) => {
   }
 });
 
+
+// ─────────────────────────────────────────────
+// PUBLISH CAROUSEL — multiple assets from campaign
+// POST /api/linkedin/publish-carousel
+// ─────────────────────────────────────────────
+app.post('/api/linkedin/publish-carousel', async (req, res) => {
+  console.log('📢 Incoming LinkedIn carousel publish request');
+  console.log('Body:', JSON.stringify(req.body));
+
+  const apiKey = req.headers['x-api-key'];
+  if (!apiKey || apiKey !== API_SECRET_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const accessToken = LINKEDIN_ACCESS_TOKEN;
+  const memberId = LINKEDIN_MEMBER_ID;
+
+  if (!accessToken) return res.status(500).json({ error: 'LINKEDIN_ACCESS_TOKEN not configured' });
+  if (!memberId) return res.status(500).json({ error: 'LINKEDIN_MEMBER_ID not configured' });
+
+  const saveMsg = req.body.saveEntityMessage || {};
+  const campaignId = req.headers['target_id'] || saveMsg.TargetId;
+  const sourceSystem = req.headers['source_system'] || CONTENT_HUB_URL;
+
+  console.log('✅ Campaign ID:', campaignId);
+
+  if (!campaignId) {
+    return res.status(400).json({ error: 'No campaign ID provided' });
+  }
+
+  try {
+    // Step 1: Auth with Content Hub
+    const token = await getContentHubToken(sourceSystem);
+    if (!token) return res.status(500).json({ error: 'Content Hub auth failed' });
+
+    // Step 2: Fetch campaign entity to get linked assets
+    // const campaignResponse = await axios.get(
+    //   `${sourceSystem}/api/entities/${campaignId}?members=CampaignContent`,
+    //   { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' } }
+    // );
+// Step 2: Fetch asset IDs from campaign selection pool
+const selectionResponse = await axios.get(
+  `${sourceSystem}/api/selection/SelectionPool.ContentCampaignDetail/`,
+  {
+    params: {
+      ignorePermissions: false,
+      definitionNames: 'M.Content,M.Asset,M.Deliverable',
+      subPoolId: campaignId
+    },
+    headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' }
+  }
+);
+
+const assetIds = selectionResponse.data?.['M.Asset']?.items || [];
+console.log('✅ Found asset IDs from selection pool:', assetIds);
+
+if (assetIds.length === 0) {
+  return res.status(400).json({ error: 'No assets found in campaign selection pool' });
+}
+
+// Get campaign title for caption
+const campaignResponse = await axios.get(
+  `${sourceSystem}/api/entities/${campaignId}`,
+  { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' } }
+);
+    const caption = campaignResponse.data?.properties?.Title || 'Campaign post from Sitecore Content Hub';
+    const campaign = campaignResponse.data;
+    const shareCommentary = campaign?.properties?.Title || 'Campaign post from Sitecore Content Hub';
+    const memberItems = campaign?.relations?.CampaignContent?.items || [];
+
+    console.log('✅ Found', memberItems.length, 'assets in campaign');
+
+    if (memberItems.length === 0) {
+      return res.status(400).json({ error: 'No assets found in campaign' });
+    }
+
+    // Step 3: Upload each asset to LinkedIn (max 20)
+    const mediaArray = [];
+    for (const assetId of assetIds.slice(0, 20)) {
+
+      const assetDetails = await getAssetDetails(assetId, sourceSystem);
+
+      if (!assetDetails.imageUrl) {
+        console.log(`⚠️ Skipping asset ${assetId} — no image URL`);
+        continue;
+      }
+
+      const assetUrn = await uploadImageToLinkedIn(
+        assetDetails.imageUrl,
+        assetDetails.imageToken,
+        accessToken,
+        memberId
+      );
+
+      if (assetUrn) {
+        await waitForLinkedInAsset(assetUrn, accessToken);
+        mediaArray.push({
+          status: 'READY',
+          description: { text: shareCommentary },
+          media: assetUrn,
+          title: { text: assetDetails.title || shareCommentary }
+        });
+        console.log(`✅ Asset ${assetId} uploaded: ${assetUrn}`);
+      }
+    }
+
+    if (mediaArray.length === 0) {
+      return res.status(400).json({ error: 'No assets could be uploaded to LinkedIn' });
+    }
+
+    // Step 4: Post carousel to LinkedIn
+    const postBody = {
+      author: `urn:li:person:${memberId}`,
+      lifecycleState: 'PUBLISHED',
+      specificContent: {
+        'com.linkedin.ugc.ShareContent': {
+          shareCommentary: { text: shareCommentary },
+          shareMediaCategory: 'IMAGE',
+          media: mediaArray
+        }
+      },
+      visibility: {
+        'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC'
+      }
+    };
+
+    const postResponse = await axios.post(
+      'https://api.linkedin.com/v2/ugcPosts',
+      postBody,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'X-Restli-Protocol-Version': '2.0.0'
+        }
+      }
+    );
+
+    console.log('✅ LinkedIn carousel published! Post ID:', postResponse.data.id);
+
+    res.json({
+      success: true,
+      postId: postResponse.data.id,
+      shareCommentary,
+      assetCount: mediaArray.length,
+      message: 'Successfully published carousel to LinkedIn',
+    });
+
+  } catch (err) {
+    console.error('❌ LinkedIn carousel publish failed:', err.response?.data || err.message);
+    res.status(500).json({
+      error: 'Failed to publish carousel to LinkedIn',
+      details: err.response?.data || err.message,
+    });
+  }
+});
+
 // ✅ REMOVED: app.listen() - Vercel serverless handles this via wrapper
 // For local development, the wrapper will handle server startup
 // For Vercel, api/linkedin.js will wrap this with serverless-http
