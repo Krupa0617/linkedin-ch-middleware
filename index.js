@@ -555,9 +555,7 @@ if (rawCaption && typeof rawCaption === 'object') {
   caption = rawCaption;
 }   const campaign = campaignResponse.data;
 
-const shareCommentary =
-  campaign?.properties?.SocialPostCaption ||
-  'Campaign post from Sitecore Content Hub';
+const shareCommentary = caption
 
 console.log('✅ Found', assetIds.length, 'assets in campaign');
 
