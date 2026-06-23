@@ -541,8 +541,19 @@ const campaignResponse = await axios.get(
   `${sourceSystem}/api/entities/${campaignId}`,
   { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' } }
 );
-    const caption = campaignResponse.data?.properties?.SocialPostCaption || 'Campaign post from Sitecore Content Hub';
-   const campaign = campaignResponse.data;
+const rawCaption = campaignResponse.data?.properties?.SocialPostCaption;
+
+let caption = 'Campaign post from Sitecore Content Hub';
+
+if (rawCaption && typeof rawCaption === 'object') {
+  caption =
+    rawCaption['en-US'] ||
+    rawCaption['(Default)'] ||
+    Object.values(rawCaption)[0] ||
+    caption;
+} else if (typeof rawCaption === 'string') {
+  caption = rawCaption;
+}   const campaign = campaignResponse.data;
 
 const shareCommentary =
   campaign?.properties?.SocialPostCaption ||
