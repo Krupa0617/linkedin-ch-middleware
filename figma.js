@@ -42,8 +42,8 @@ async function getContentHubToken(contentHubBaseUrl) {
     const response = await axios.post(
       `${contentHubBaseUrl}/api/authenticate`,
       {
-        user_name: "dipak.b@biztechnosys.com",
-        password: "Dipak@123",
+        user_name: CONTENT_HUB_USERNAME,
+        password: CONTENT_HUB_PASSWORD,
       },
       { headers: { 'Content-Type': 'application/json' } }
     );
