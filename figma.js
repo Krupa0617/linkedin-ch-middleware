@@ -18,7 +18,7 @@ const {
 } = process.env;
 
 const FIGMA_API_URL = 'https://api.figma.com/v1';
-const MAX_RETRIES = 5;
+const MAX_RETRIES = 6;
 
 // ─────────────────────────────────────────────
 // Helpers: sleep + retry with exponential backoff
@@ -26,18 +26,59 @@ const MAX_RETRIES = 5;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * Tracks Figma rate-limit headers across all calls so we can throttle
+ * pre-emptively instead of waiting for a 429.
+ *
+ * Figma uses a sliding 60 s window.  After each response we record:
+ *  - `resetAt`  — epoch-ms when the window resets
+ *  - `remaining` — requests left in this window
+ */
+const figmaRateLimit = { resetAt: 0, remaining: 999 };
+
+function trackFigmaRateLimit(response) {
+  const headers = response.headers || {};
+  const remaining = headers['x-ratelimit-remaining'];
+  const resetEpoch = headers['x-ratelimit-reset'];
+
+  if (remaining != null) figmaRateLimit.remaining = Number(remaining);
+  if (resetEpoch)        figmaRateLimit.resetAt = Number(resetEpoch) * 1000;
+
+  // If we are down to the last request, proactively pause until the reset.
+  if (figmaRateLimit.remaining <= 1 && figmaRateLimit.resetAt > Date.now()) {
+    const wait = figmaRateLimit.resetAt - Date.now() + 200;
+    console.warn(
+      `⚠️  Figma rate limit nearly exhausted (${figmaRateLimit.remaining} remaining) — ` +
+      `pausing ${(wait / 1000).toFixed(1)}s until window resets`
+    );
+    return sleep(wait);
+  }
+}
+
+/**
  * Wraps an axios GET call with exponential backoff on 429 / 5xx errors.
- * - Retries up to `maxRetries` times.
- * - First retry after 1s, doubles each time, capped at 30s.
- * - Adds ~250ms random jitter to spread retries across concurrent calls.
- * - Logs each retry attempt with the delay used.
+ *
+ * Strategy:
+ *  - On 429, check the `x-ratelimit-reset` header — if present, wait exactly
+ *    until that Unix timestamp (+ 0.5 s buffer) since Figma uses a sliding
+ *    60 s window.
+ *  - Without the header, fall back to exponential backoff: 2s, 4s, 8s, …
+ *    capped at 60s, with ±250 ms jitter.
+ *  - Non-retryable errors (4xx except 429) are thrown immediately.
+ *  - Retries up to `maxRetries` times (default 6).
+ *
+ * @param {string} url
+ * @param {object} [config]
+ * @param {number} [maxRetries]
  */
 async function axiosGetWithRetry(url, config = {}, maxRetries = MAX_RETRIES) {
   let lastErr;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      return await axios.get(url, config);
+      const response = await axios.get(url, config);
+      // Track remaining quota and proactively pause if nearly empty
+      await trackFigmaRateLimit(response);
+      return response;
     } catch (err) {
       lastErr = err;
       const status = err.response?.status;
@@ -48,22 +89,34 @@ async function axiosGetWithRetry(url, config = {}, maxRetries = MAX_RETRIES) {
       }
 
       if (attempt === maxRetries) {
-        console.error(`❌ Retry exhausted after ${maxRetries} attempts for ${url}`);
+        console.error(`❌ Rate-limit retries exhausted after ${maxRetries} attempts for ${url}`);
         throw err;
       }
 
-      // Exponential backoff: 1s, 2s, 4s, 8s, 16s … with jitter
-      const baseDelay = Math.min(1000 * 2 ** attempt, 30000);
-      const jitter = Math.round(Math.random() * 250);
-      const delay = baseDelay + jitter;
+      const headers = err.response?.headers || {};
+      const remaining = headers['x-ratelimit-remaining'];
+      const resetEpoch = headers['x-ratelimit-reset']; // Unix seconds
 
-      const resetTime = err.response?.headers?.['x-ratelimit-reset'];
-      const msg = resetTime
-        ? `rate limit resets at ${resetTime}`
-        : `status ${status}`;
+      // ── Prefer the server-provided reset time ──────────────
+      let delay;
+      if (resetEpoch) {
+        const resetMs = Number(resetEpoch) * 1000;
+        const now = Date.now();
+        delay = Math.max(resetMs - now + 500, 2000); // +500ms buffer, min 2s
+        delay = Math.min(delay, 120_000);             // safety cap
+      } else {
+        // Exponential backoff: 2s, 4s, 8s, 16s, 32s … capped at 60s
+        delay = Math.min(2000 * 2 ** attempt, 60_000);
+      }
 
+      // Add jitter
+      const jitter = Math.round(Math.random() * 500) - 250;
+      delay += jitter;
+
+      const remainedMsg = remaining != null ? `, ${remaining} remaining` : '';
       console.warn(
-        `⚠️  Figma API ${msg} — retrying in ${(delay / 1000).toFixed(1)}s (attempt ${attempt + 1}/${maxRetries})`
+        `⚠️  Figma API 429 — retrying in ${(delay / 1000).toFixed(1)}s ` +
+        `(attempt ${attempt + 1}/${maxRetries}${remainedMsg})`
       );
 
       await sleep(delay);
