@@ -21,7 +21,7 @@ const {
 const FIGMA_API_URL = 'https://api.figma.com/v1';
 
 // ─────────────────────────────────────────────
-// ROOT — mirrors Instagram and LinkedIn entry points
+// ROOT
 // ─────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({
@@ -54,7 +54,7 @@ async function getContentHubToken(contentHubBaseUrl) {
       return null;
     }
 
-    console.log('✅ Content Hub token obtained, length:', token.length);
+    console.log('✅ Content Hub token obtained');
     return token;
   } catch (err) {
     console.error('❌ Content Hub auth failed:', err.response?.status, err.message);
@@ -167,7 +167,7 @@ async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, toke
 // ─────────────────────────────────────────────
 // GET — test connection
 // ─────────────────────────────────────────────
-app.get('/import', (req, res) => {
+app.get('/api/figma/import', (req, res) => {
   res.json({ status: '✅ Figma import endpoint is ready. Use POST to import.' });
 });
 
@@ -175,7 +175,7 @@ app.get('/import', (req, res) => {
 // MAIN ROUTE: Import Figma file to Content Hub
 // POST /api/figma/import
 // ─────────────────────────────────────────────
-app.post('/import', async (req, res) => {
+app.post('/api/figma/import', async (req, res) => {
   console.log('📥 Incoming Figma import request');
   console.log('Body:', JSON.stringify(req.body));
 
@@ -274,7 +274,7 @@ app.post('/import', async (req, res) => {
 // ─────────────────────────────────────────────
 // HEALTH CHECK
 // ─────────────────────────────────────────────
-app.get('/health', (req, res) => {
+app.get('/api/figma/health', (req, res) => {
   console.log('✅ Figma health check');
   res.json({
     status: '✅ healthy',
