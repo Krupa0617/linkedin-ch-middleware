@@ -182,33 +182,29 @@ async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, toke
   try {
     console.log(`📤 Uploading to Content Hub: ${fileName}`);
 
-  const createUrl = `${contentHubBaseUrl}/api/entities`;
+    // ✅ CHANGE: Add M.Asset to the URL
+    const createUrl = `${contentHubBaseUrl}/api/entities/M.Asset`;
+    console.log("Create URL:", createUrl);
 
-console.log("Create URL:", createUrl);
+    const entityResponse = await axios.post(
+      createUrl,
+      {
+        properties: {
+          Title: { values: [{ value: fileName, culture: 'en-US' }] },
+        },
+      },
+      {
+        headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' }
+      }
+    );
 
-const entityResponse = await axios.post(
-  createUrl,
-  {
-    entitydefinition: { href: `${contentHubBaseUrl}/api/v2/entitydefinitions/M.Asset` },
-    properties: {
-      Title: { values: [{ value: fileName, culture: 'en-US' }] },
-    },
-  },
-  {
-    headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' }
-  }
-);
-  console.log("Entity Response");
-console.log(JSON.stringify(entityResponse.data, null, 2));
+    console.log("Entity Response:", JSON.stringify(entityResponse.data, null, 2));
 
-  const assetId =
-entityResponse.data.id ??
-entityResponse.data.identifier ??
-entityResponse.data.entity?.id ??
-entityResponse.data.asset?.id;
+    const assetId =
+      entityResponse.data.id ??
+      entityResponse.data.identifier ??
+      entityResponse.data.entity?.id;
 
-console.log("Asset Id:", assetId);
-    
     if (!assetId) {
       console.error('❌ No asset ID in response:', JSON.stringify(entityResponse.data));
       throw new Error('Entity creation failed - no ID returned');
@@ -216,46 +212,32 @@ console.log("Asset Id:", assetId);
 
     console.log('✅ Entity created:', assetId);
 
-    // Step 2: Upload binary file using FormData
+    // Upload binary
     console.log('  Step 2: Uploading file...');
-    
     const formData = new FormData();
     formData.append('file', imageBuffer, { filename: fileName });
 
-    const uploadUrl =
-`${contentHubBaseUrl}/api/assets/${assetId}/versions/1/renditions/original/file`;
+    const uploadUrl = `${contentHubBaseUrl}/api/assets/${assetId}/versions/1/renditions/original/file`;
+    console.log("Upload URL:", uploadUrl);
 
-console.log("Upload URL:", uploadUrl);
-
-    const uploadResponse = await axios.post(
-      uploadUrl,
-      formData,
-      {
-        headers: {
-          'X-Auth-Token': token,
-          ...formData.getHeaders()
-        },
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity,
-      }
-    );
+    const uploadResponse = await axios.post(uploadUrl, formData, {
+      headers: {
+        'X-Auth-Token': token,
+        ...formData.getHeaders()
+      },
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+    });
 
     console.log('✅ File uploaded:', assetId);
     return assetId;
 
   } catch(err){
-
-    console.error("Status:",
-        err.response?.status);
-
-    console.error("URL:",
-        err.config?.url);
-
-    console.error("Response:",
-        JSON.stringify(err.response?.data,null,2));
-
+    console.error("Status:", err.response?.status);
+    console.error("URL:", err.config?.url);
+    console.error("Response:", JSON.stringify(err.response?.data, null, 2));
     throw err;
-}
+  }
 }
 
 // ─────────────────────────────────────────────
