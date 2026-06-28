@@ -183,21 +183,18 @@ async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, toke
 
     // Step 1: Create asset entity
     console.log('  Step 1: Creating entity...');
-    const entityResponse = await axios.post(
-      `${contentHubBaseUrl}/api/v2/entities`,
-      {
-        entityType: 'M.Asset',
-        properties: {
-          Title: { 'en-US': fileName },
-          FileName: fileName,
-          Source: 'Figma',
-        },
-      },
-      {
-        headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' }
-      }
-    );
-
+   const entityResponse = await axios.post(
+  `${contentHubBaseUrl}/api/v2/entities`,
+  {
+    entitydefinition: { href: `${contentHubBaseUrl}/api/v2/entitydefinitions/M.Asset` },
+    properties: {
+      Title: { values: [{ value: fileName, culture: 'en-US' }] },
+    },
+  },
+  {
+    headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' }
+  }
+);
     console.log('  Entity response status:', entityResponse.status);
     console.log('  Entity response data:', JSON.stringify(entityResponse.data, null, 2));
 
