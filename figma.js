@@ -18,12 +18,43 @@ const {
 } = process.env;
 
 const FIGMA_API_URL = 'https://api.figma.com/v1';
-const MAX_RETRIES = 6;
+const MAX_RETRIES = 8;
 
 // ─────────────────────────────────────────────
 // Helpers: sleep + retry with exponential backoff
 // ─────────────────────────────────────────────
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * In-memory cache for Figma API responses.
+ * Keyed by the full URL (including query params).
+ * Avoids hitting the Figma API at all for files already fetched recently.
+ *
+ * Figma file data (structure, names, IDs) changes infrequently, so a 5-minute
+ * cache is safe and dramatically reduces rate-limit pressure.
+ */
+const figmaCache = new Map();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function getCached(key) {
+  const entry = figmaCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CACHE_TTL_MS) {
+    figmaCache.delete(key);
+    return null;
+  }
+  return entry.data;
+}
+
+function setCache(key, data) {
+  // Evict oldest entries if cache grows beyond 50 items
+  if (figmaCache.size >= 50) {
+    const oldest = [...figmaCache.entries()]
+      .sort(([, a], [, b]) => a.ts - b.ts)[0];
+    if (oldest) figmaCache.delete(oldest[0]);
+  }
+  figmaCache.set(key, { data, ts: Date.now() });
+}
 
 /**
  * Tracks Figma rate-limit headers across all calls so we can throttle
@@ -39,9 +70,19 @@ function trackFigmaRateLimit(response) {
   const headers = response.headers || {};
   const remaining = headers['x-ratelimit-remaining'];
   const resetEpoch = headers['x-ratelimit-reset'];
+  const limit = headers['x-ratelimit-limit'];
 
   if (remaining != null) figmaRateLimit.remaining = Number(remaining);
   if (resetEpoch)        figmaRateLimit.resetAt = Number(resetEpoch) * 1000;
+
+  if (limit != null) {
+    console.log(
+      `📊 Figma rate-limit state: ${figmaRateLimit.remaining}/${limit} remaining` +
+      (figmaRateLimit.resetAt > Date.now()
+        ? `, resets in ${Math.round((figmaRateLimit.resetAt - Date.now()) / 1000)}s`
+        : '')
+    );
+  }
 
   // If we are down to the last request, proactively pause until the reset.
   if (figmaRateLimit.remaining <= 1 && figmaRateLimit.resetAt > Date.now()) {
@@ -55,32 +96,89 @@ function trackFigmaRateLimit(response) {
 }
 
 /**
- * Wraps an axios GET call with exponential backoff on 429 / 5xx errors.
+ * Dumps all response headers from an axios error to help diagnose rate-limit
+ * issues.  Figma does NOT always include the standard rate-limit headers on
+ * 429 responses — this lets us see exactly what it sent back.
+ */
+function logFigmaErrorDiagnostics(err, url) {
+  const status = err.response?.status;
+  const headers = err.response?.headers || {};
+  const body = err.response?.data;
+
+  console.error(`\n🔥 ─── FIGMA API ERROR DIAGNOSTICS ───`);
+  console.error(`   URL:     ${url}`);
+  console.error(`   Status:  ${status}`);
+
+  // Dump ALL response headers — this is key for rate-limit debugging
+  const relevantHeaders = [
+    'x-ratelimit-limit',
+    'x-ratelimit-remaining',
+    'x-ratelimit-reset',
+    'retry-after',
+  ];
+  console.error(`   ── Rate-limit headers ──`);
+  for (const h of relevantHeaders) {
+    console.error(`   ${h}: ${headers[h] || '(not sent by Figma)'}`);
+  }
+  // Dump any other x-ratelimit-* headers Figma may use
+  for (const [key, val] of Object.entries(headers)) {
+    if (key.startsWith('x-ratelimit-') && !relevantHeaders.includes(key)) {
+      console.error(`   ${key}: ${val}`);
+    }
+  }
+
+  console.error(`   ── Response body ──`);
+  console.error(`   ${JSON.stringify(body)}`);
+
+  console.error(`   ── Possible causes ──`);
+  console.error(`   1. Your Figma token is on a Free / Starter plan (≈60 req/min)`);
+  console.error(`   2. Multiple services/instances share the same FIGMA_ACCESS_TOKEN`);
+  console.error(`   3. Daily API quota may be exhausted on your Figma plan`);
+  console.error(`   4. Another service is calling Figma with the same token between our retries`);
+  console.error(`   ───────────────────────────────\n`);
+}
+
+/**
+ * Wraps an axios GET call with:
+ *  - In-memory caching (5 min TTL) — avoids hitting Figma for repeated requests.
+ *  - Exponential backoff on 429 / 5xx with detailed diagnostics.
  *
- * Strategy:
- *  - On 429, check the `x-ratelimit-reset` header — if present, wait exactly
- *    until that Unix timestamp (+ 0.5 s buffer) since Figma uses a sliding
- *    60 s window.
- *  - Without the header, fall back to exponential backoff: 2s, 4s, 8s, …
- *    capped at 60s, with ±250 ms jitter.
- *  - Non-retryable errors (4xx except 429) are thrown immediately.
- *  - Retries up to `maxRetries` times (default 6).
+ * Retry strategy:
+ *  1st retry — wait  8s   (long cool-down so any competing consumers settle)
+ *  2nd retry — wait 15s
+ *  3rd retry — wait 30s
+ *  4th retry — wait 60s   (full minute window)
+ *  5th+     — wait 60s each (keep trying once per minute)
  *
- * @param {string} url
- * @param {object} [config]
- * @param {number} [maxRetries]
+ * On every 429 we log ALL response headers so you can see
+ * whether Figma sent rate-limit metadata (it often doesn't on 429).
+ *
+ * @param {string}  url
+ * @param {object}  [config]
+ * @param {number}  [maxRetries]
  */
 async function axiosGetWithRetry(url, config = {}, maxRetries = MAX_RETRIES) {
-  let lastErr;
+  // ── Check cache first ──────────────────────────────────
+  const cacheKey = `${config.method || 'GET'}|${url}|${JSON.stringify(config.params || {})}`;
+  const cached = getCached(cacheKey);
+  if (cached) {
+    console.log(`📦 Cache HIT for ${url}`);
+    return cached;
+  }
+
+  // ── Retry loop ─────────────────────────────────────────
+  // Retry delays: 8s, 15s, 30s, then 60s for each subsequent attempt
+  const RETRY_DELAYS = [8_000, 15_000, 30_000, 60_000, 60_000, 60_000, 60_000];
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const response = await axios.get(url, config);
       // Track remaining quota and proactively pause if nearly empty
       await trackFigmaRateLimit(response);
+      // Cache the successful response
+      setCache(cacheKey, response);
       return response;
     } catch (err) {
-      lastErr = err;
       const status = err.response?.status;
 
       // Only retry on 429 (rate limit) and 5xx (server) errors
@@ -88,42 +186,32 @@ async function axiosGetWithRetry(url, config = {}, maxRetries = MAX_RETRIES) {
         throw err;
       }
 
+      // ── Log detailed diagnostics on every 429 ──────────
+      if (status === 429) {
+        logFigmaErrorDiagnostics(err, url);
+      }
+
       if (attempt === maxRetries) {
-        console.error(`❌ Rate-limit retries exhausted after ${maxRetries} attempts for ${url}`);
+        console.error(
+          `❌ Rate-limit retries exhausted after ${maxRetries} attempts for ${url}\n` +
+          `   💡 Action needed: See diagnostics above.  Most likely your Figma token is\n` +
+          `      shared by multiple services or is on a Free plan with very low limits.`
+        );
         throw err;
       }
 
-      const headers = err.response?.headers || {};
-      const remaining = headers['x-ratelimit-remaining'];
-      const resetEpoch = headers['x-ratelimit-reset']; // Unix seconds
+      // Pick delay for this attempt (last delay repeats for extra retries)
+      const delay = RETRY_DELAYS[Math.min(attempt, RETRY_DELAYS.length - 1)];
+      const jitter = Math.round(Math.random() * 1000) - 500;
+      const finalDelay = delay + jitter;
 
-      // ── Prefer the server-provided reset time ──────────────
-      let delay;
-      if (resetEpoch) {
-        const resetMs = Number(resetEpoch) * 1000;
-        const now = Date.now();
-        delay = Math.max(resetMs - now + 500, 2000); // +500ms buffer, min 2s
-        delay = Math.min(delay, 120_000);             // safety cap
-      } else {
-        // Exponential backoff: 2s, 4s, 8s, 16s, 32s … capped at 60s
-        delay = Math.min(2000 * 2 ** attempt, 60_000);
-      }
-
-      // Add jitter
-      const jitter = Math.round(Math.random() * 500) - 250;
-      delay += jitter;
-
-      const remainedMsg = remaining != null ? `, ${remaining} remaining` : '';
       console.warn(
-        `⚠️  Figma API 429 — retrying in ${(delay / 1000).toFixed(1)}s ` +
-        `(attempt ${attempt + 1}/${maxRetries}${remainedMsg})`
+        `⏳ Retry ${attempt + 1}/${maxRetries} in ${(finalDelay / 1000).toFixed(1)}s...`
       );
 
-      await sleep(delay);
+      await sleep(finalDelay);
     }
   }
-
-  throw lastErr; // unreachable, but satisfies the linter
 }
 
 // ─────────────────────────────────────────────
@@ -472,8 +560,28 @@ app.post('/api/figma/import', async (req, res) => {
     });
 
   } catch (err) {
+    const status = err.response?.status;
     console.error('❌ Figma import failed:', err.message);
-    res.status(500).json({
+
+    if (status === 429) {
+      return res.status(429).json({
+        error: 'Figma API rate limit exceeded',
+        details: [
+          'Your Figma access token has been rate-limited. This typically means:',
+          '  1. The token is on a Free/Starter plan (~60 requests/minute)',
+          '  2. Multiple services/instances are sharing the same FIGMA_ACCESS_TOKEN',
+          '  3. A daily API quota has been reached',
+          '',
+          'Solutions:',
+          '  • Create a dedicated Figma token used ONLY by this service',
+          '  • Add a delay between import requests (at least 2-3 seconds)',
+          '  • Upgrade your Figma plan for higher rate limits',
+          '  • Check if another service is consuming the same token\'s quota',
+        ].join('\n'),
+      });
+    }
+
+    res.status(status || 500).json({
       error: 'Failed to import from Figma',
       details: err.message,
     });
