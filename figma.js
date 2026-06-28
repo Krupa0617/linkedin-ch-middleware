@@ -18,6 +18,60 @@ const {
 } = process.env;
 
 const FIGMA_API_URL = 'https://api.figma.com/v1';
+const MAX_RETRIES = 5;
+
+// ─────────────────────────────────────────────
+// Helpers: sleep + retry with exponential backoff
+// ─────────────────────────────────────────────
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Wraps an axios GET call with exponential backoff on 429 / 5xx errors.
+ * - Retries up to `maxRetries` times.
+ * - First retry after 1s, doubles each time, capped at 30s.
+ * - Adds ~250ms random jitter to spread retries across concurrent calls.
+ * - Logs each retry attempt with the delay used.
+ */
+async function axiosGetWithRetry(url, config = {}, maxRetries = MAX_RETRIES) {
+  let lastErr;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await axios.get(url, config);
+    } catch (err) {
+      lastErr = err;
+      const status = err.response?.status;
+
+      // Only retry on 429 (rate limit) and 5xx (server) errors
+      if (status !== 429 && (status < 500 || status >= 600)) {
+        throw err;
+      }
+
+      if (attempt === maxRetries) {
+        console.error(`❌ Retry exhausted after ${maxRetries} attempts for ${url}`);
+        throw err;
+      }
+
+      // Exponential backoff: 1s, 2s, 4s, 8s, 16s … with jitter
+      const baseDelay = Math.min(1000 * 2 ** attempt, 30000);
+      const jitter = Math.round(Math.random() * 250);
+      const delay = baseDelay + jitter;
+
+      const resetTime = err.response?.headers?.['x-ratelimit-reset'];
+      const msg = resetTime
+        ? `rate limit resets at ${resetTime}`
+        : `status ${status}`;
+
+      console.warn(
+        `⚠️  Figma API ${msg} — retrying in ${(delay / 1000).toFixed(1)}s (attempt ${attempt + 1}/${maxRetries})`
+      );
+
+      await sleep(delay);
+    }
+  }
+
+  throw lastErr; // unreachable, but satisfies the linter
+}
 
 // ─────────────────────────────────────────────
 // ROOT
@@ -68,7 +122,7 @@ async function getFigmaExports(fileId, nodeId = null) {
   try {
     console.log(`🎨 Fetching Figma file: ${fileId}`);
     
-    const fileResponse = await axios.get(
+    const fileResponse = await axiosGetWithRetry(
       `${FIGMA_API_URL}/files/${fileId}`,
       {
         headers: { 'X-Figma-Token': FIGMA_ACCESS_TOKEN }
@@ -135,7 +189,7 @@ async function getFigmaExports(fileId, nodeId = null) {
 
     // Get export URLs
     console.log('📤 Requesting exports for nodes:', nodesToExport);
-    const exportResponse = await axios.get(
+    const exportResponse = await axiosGetWithRetry(
       `${FIGMA_API_URL}/files/${fileId}/images`,
       {
         params: {
