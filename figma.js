@@ -103,10 +103,8 @@ async function getFigmaExports(fileId, nodeId = null) {
           if (parent.children && Array.isArray(parent.children)) {
             console.log(`    - Has ${parent.children.length} children`);
 
-            // Get all children from CANVAS/SECTION, not just frames
             const childNodes = parent.children
               .filter(n => {
-                // Export frames, components, groups, boards - basically anything visual
                 const exportableTypes = ['FRAME', 'COMPONENT', 'GROUP', 'BOARD', 'RECTANGLE', 'TEXT', 'IMAGE'];
                 return exportableTypes.includes(n.type);
               })
@@ -148,7 +146,7 @@ async function getFigmaExports(fileId, nodeId = null) {
       }
     );
 
-   console.log('✅ Export response received');
+    console.log('✅ Export response received');
 
     // IMPORTANT: Figma API returns images under .meta.images, not directly under .images
     const images = exportResponse.data.meta?.images || exportResponse.data.images;
@@ -273,9 +271,7 @@ async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, toke
 function parseFigmaUrl(url) {
   try {
     const parsed = new URL(url);
-    // Path: /design/{fileId}/... or /file/{fileId}/... or /proto/{fileId}/...
     const segments = parsed.pathname.split('/').filter(Boolean);
-    // After the type segment (design/file/proto) comes the file ID
     const typeIndex = segments.findIndex(s => ['design', 'file', 'proto'].includes(s));
     if (typeIndex === -1 || typeIndex + 1 >= segments.length) {
       return null;
@@ -283,7 +279,6 @@ function parseFigmaUrl(url) {
     const fileId = segments[typeIndex + 1];
     if (!fileId || fileId.length < 10) return null;
 
-    // Extract optional node-id from query string
     const nodeId = parsed.searchParams.get('node-id') || null;
 
     return { fileId, nodeId };
@@ -318,7 +313,19 @@ app.post('/api/figma/import', async (req, res) => {
     return res.status(500).json({ error: 'FIGMA_ACCESS_TOKEN not configured' });
   }
 
+  // ─────────────────────────────────────────────
+  // Content Hub triggers wrap "Values" inside a
+  // `context` object alongside `saveEntityMessage`.
+  // Fall back to context if top-level fields are absent.
+  // ─────────────────────────────────────────────
   let { figmaFileId, figmaNodeId, figmaUrl } = req.body;
+
+  if (!figmaUrl)    figmaUrl    = req.body.context?.figmaUrl;
+  if (!figmaFileId) figmaFileId = req.body.context?.figmaFileId;
+  if (!figmaNodeId) figmaNodeId = req.body.context?.figmaNodeId;
+
+  console.log('🔍 Resolved figmaUrl:', figmaUrl || '(none)');
+  console.log('🔍 Resolved figmaFileId:', figmaFileId || '(none)');
 
   // Accept either a raw file ID or a full Figma URL
   if (!figmaFileId && figmaUrl) {
