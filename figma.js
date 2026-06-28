@@ -148,10 +148,14 @@ async function getFigmaExports(fileId, nodeId = null) {
       }
     );
 
-    console.log('✅ Export response received');
-    console.log('📊 Images in response:', exportResponse.data.images ? Object.keys(exportResponse.data.images).length : 'undefined');
+   console.log('✅ Export response received');
     
-    if (!exportResponse.data.images) {
+    // IMPORTANT: Figma API returns images under .meta.images, not directly under .images
+    const images = exportResponse.data.meta?.images || exportResponse.data.images;
+    
+    console.log('📊 Images in response:', images ? Object.keys(images).length : 'undefined');
+    
+    if (!images || Object.keys(images).length === 0) {
       console.error('❌ No images in Figma response:', JSON.stringify(exportResponse.data, null, 2));
       return { fileName, lastModified, exports: {} };
     }
@@ -159,7 +163,7 @@ async function getFigmaExports(fileId, nodeId = null) {
     return {
       fileName,
       lastModified,
-      exports: exportResponse.data.images,
+      exports: images,  // ← Changed from exportResponse.data.images
     };
 
   } catch (err) {
