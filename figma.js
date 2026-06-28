@@ -241,7 +241,7 @@ async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, toke
       createUploadResponse.data,
       {
         headers: {
-          Authorization: `Bearer ${token}`,
+          'X-Auth-Token': token,
           "Content-Type": "application/json"
         }
       }
