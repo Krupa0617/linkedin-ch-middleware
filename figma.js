@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import cors from 'cors';
 
 dotenv.config();
-
+const FormData = require('form-data');
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -182,6 +182,8 @@ async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, toke
   try {
     console.log(`📤 Uploading to Content Hub: ${fileName}`);
 
+    // Step 1: Create asset entity
+    console.log('  Step 1: Creating entity...');
     const entityResponse = await axios.post(
       `${contentHubBaseUrl}/api/v2/entities`,
       {
@@ -190,9 +192,6 @@ async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, toke
           Title: { 'en-US': fileName },
           FileName: fileName,
           Source: 'Figma',
-          FigmaMetadata: {
-            'en-US': `Imported from Figma at ${new Date().toISOString()}`
-          },
         },
       },
       {
@@ -200,17 +199,35 @@ async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, toke
       }
     );
 
-    const assetId = entityResponse.data.id;
+    console.log('  Entity response status:', entityResponse.status);
+    console.log('  Entity response data:', JSON.stringify(entityResponse.data, null, 2));
+
+    const assetId = entityResponse.data?.id || entityResponse.data?.[0]?.id;
+    
+    if (!assetId) {
+      console.error('❌ No asset ID in response:', JSON.stringify(entityResponse.data));
+      throw new Error('Entity creation failed - no ID returned');
+    }
+
     console.log('✅ Entity created:', assetId);
 
+    // Step 2: Upload binary file using FormData
+    console.log('  Step 2: Uploading file...');
+    
+    const FormData = require('form-data');
     const formData = new FormData();
-    formData.append('file', new Blob([imageBuffer]), fileName);
+    formData.append('file', imageBuffer, { filename: fileName });
 
-    await axios.post(
+    const uploadResponse = await axios.post(
       `${contentHubBaseUrl}/api/v2/assets/${assetId}/versions/1/renditions/original/file`,
       formData,
       {
-        headers: { 'X-Auth-Token': token }
+        headers: {
+          'X-Auth-Token': token,
+          ...formData.getHeaders()
+        },
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
       }
     );
 
@@ -218,7 +235,7 @@ async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, toke
     return assetId;
 
   } catch (err) {
-    console.error('❌ Content Hub upload failed:', err.message);
+    console.error('❌ Content Hub upload failed:', err.response?.status, err.response?.data || err.message);
     throw err;
   }
 }
