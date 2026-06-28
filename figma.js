@@ -177,61 +177,91 @@ async function getFigmaExports(fileId, nodeId = null) {
 // ─────────────────────────────────────────────
 // Upload image buffer to Content Hub
 // ─────────────────────────────────────────────
-async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, token) {
+async function uploadToContentHub(
+  imageBuffer,
+  fileName,
+  contentHubBaseUrl,
+  token
+) {
   try {
-    console.log(`📤 Uploading to Content Hub: ${fileName}`);
+    console.log(`📤 Uploading: ${fileName}`);
 
-    // Step 1: Create asset entity
-    console.log('  Step 1: Creating entity...');
-   const entityResponse = await axios.post(
-  `${contentHubBaseUrl}/api/v2/entities`,
-  {
-    entitydefinition: { href: `${contentHubBaseUrl}/api/v2/entitydefinitions/M.Asset` },
-    properties: {
-      Title: { values: [{ value: fileName, culture: 'en-US' }] },
-    },
-  },
-  {
-    headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' }
-  }
-);
-    console.log('  Entity response status:', entityResponse.status);
-    console.log('  Entity response data:', JSON.stringify(entityResponse.data, null, 2));
-
-    const assetId = entityResponse.data?.id || entityResponse.data?.[0]?.id;
-    
-    if (!assetId) {
-      console.error('❌ No asset ID in response:', JSON.stringify(entityResponse.data));
-      throw new Error('Entity creation failed - no ID returned');
-    }
-
-    console.log('✅ Entity created:', assetId);
-
-    // Step 2: Upload binary file using FormData
-    console.log('  Step 2: Uploading file...');
-    
-    const FormData = require('form-data');
-    const formData = new FormData();
-    formData.append('file', imageBuffer, { filename: fileName });
-
-    const uploadResponse = await axios.post(
-      `${contentHubBaseUrl}/api/v2/assets/${assetId}/versions/1/renditions/original/file`,
-      formData,
+    // STEP 1 — Request Upload URL
+    const createUploadResponse = await axios.post(
+      `${contentHubBaseUrl}/api/v2.0/upload`,
+      {
+        file_name: fileName,
+        file_size: imageBuffer.length,
+        upload_configuration: {
+          name: "AssetUploadConfiguration"
+        },
+        action: {
+          name: "NewAsset"
+        }
+      },
       {
         headers: {
           'X-Auth-Token': token,
-          ...formData.getHeaders()
-        },
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity,
+          "Content-Type": "application/json"
+        }
       }
     );
 
-    console.log('✅ File uploaded:', assetId);
-    return assetId;
+    console.log("✅ Upload session created");
+
+    const uploadUrl =
+      createUploadResponse.headers.location;
+
+    if (!uploadUrl) {
+      throw new Error("No upload URL returned");
+    }
+
+    // STEP 2 — Upload File
+    const FormData = require("form-data");
+
+    const formData = new FormData();
+
+    formData.append("file", imageBuffer, fileName);
+
+    await axios.post(
+      `${contentHubBaseUrl}${uploadUrl}`,
+      formData,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...formData.getHeaders()
+        },
+        maxBodyLength: Infinity
+      }
+    );
+
+    console.log("✅ Binary uploaded");
+
+    // STEP 3 — Finalize Upload
+    const finalizeResponse = await axios.post(
+      `${contentHubBaseUrl}/api/v2.0/upload/finalize`,
+      createUploadResponse.data,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    console.log("✅ Upload finalized");
+
+    return finalizeResponse.data.asset_id;
 
   } catch (err) {
-    console.error('❌ Content Hub upload failed:', err.response?.status, err.response?.data || err.message);
+    console.error(
+      "❌ Upload failed:",
+      err.response?.status,
+      err.response?.data || err.message
+    );
+
+    console.error("URL:", err.config?.url);
+
     throw err;
   }
 }
