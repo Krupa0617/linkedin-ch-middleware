@@ -78,20 +78,65 @@ async function getFigmaExports(fileId, nodeId = null) {
 
     const { name: fileName, lastModified, document } = fileResponse.data;
     console.log('✅ File fetched:', fileName);
+    
+    // ──── DEBUG: Log document structure ────
+    console.log('📋 Document structure:');
+    if (document.children && Array.isArray(document.children)) {
+      const nodeInfo = document.children.map(n => ({ 
+        name: n.name, 
+        type: n.type, 
+        id: n.id,
+        hasChildren: n.children ? n.children.length : 0
+      }));
+      console.log(JSON.stringify(nodeInfo, null, 2));
+    }
+    // ──── END DEBUG ────
 
-    const nodesToExport = nodeId 
-      ? [nodeId] 
-      : document.children
-          .filter(n => n.type === 'FRAME' || n.type === 'COMPONENT')
-          .map(n => n.id);
+    let nodesToExport = [];
 
-    console.log('✅ Nodes to export:', nodesToExport.length);
+    if (nodeId) {
+      // If specific node ID provided, use it
+      nodesToExport = [nodeId];
+      console.log('✅ Using specific node ID:', nodeId);
+    } else {
+      // Strategy 1: Look for FRAME, COMPONENT, BOARD at top level
+      nodesToExport = document.children
+        .filter(n => ['FRAME', 'COMPONENT', 'BOARD', 'SECTION'].includes(n.type))
+        .map(n => n.id);
+
+      console.log('✅ Top-level exportable nodes found:', nodesToExport.length);
+
+      // Strategy 2: If no frames found, look inside SECTION/GROUP nodes
+      if (nodesToExport.length === 0) {
+        console.log('⚠️ No top-level frames found, looking inside sections/groups...');
+        
+        document.children.forEach(parent => {
+          if (parent.children && Array.isArray(parent.children)) {
+            const childFrames = parent.children
+              .filter(n => ['FRAME', 'COMPONENT', 'BOARD'].includes(n.type))
+              .map(n => n.id);
+            nodesToExport.push(...childFrames);
+            console.log(`  - Found ${childFrames.length} frames inside "${parent.name}"`);
+          }
+        });
+      }
+
+      // Strategy 3: If still nothing, just export all children
+      if (nodesToExport.length === 0) {
+        console.log('⚠️ No frames found, exporting all children...');
+        nodesToExport = document.children.map(n => n.id);
+      }
+    }
+
+    console.log('✅ Total nodes to export:', nodesToExport.length);
 
     if (nodesToExport.length === 0) {
-      console.warn('⚠️ No frames/components found in file');
+      console.warn('⚠️ No nodes found to export');
       return { fileName, lastModified, exports: {} };
     }
 
+    // Get export URLs
+    console.log('📤 Requesting exports for nodes:', nodesToExport);
     const exportResponse = await axios.get(
       `${FIGMA_API_URL}/files/${fileId}/images`,
       {
@@ -104,6 +149,8 @@ async function getFigmaExports(fileId, nodeId = null) {
       }
     );
 
+    console.log('✅ Export URLs received:', Object.keys(exportResponse.data.images).length);
+
     return {
       fileName,
       lastModified,
@@ -111,7 +158,7 @@ async function getFigmaExports(fileId, nodeId = null) {
     };
 
   } catch (err) {
-    console.error('❌ Figma fetch failed:', err.message);
+    console.error('❌ Figma fetch failed:', err.response?.status, err.message);
     throw err;
   }
 }
