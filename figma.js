@@ -68,7 +68,7 @@ async function getContentHubToken(contentHubBaseUrl) {
 async function getFigmaExports(fileId, nodeId = null) {
   try {
     console.log(`🎨 Fetching Figma file: ${fileId}`);
-    
+
     const fileResponse = await axios.get(
       `${FIGMA_API_URL}/files/${fileId}`,
       {
@@ -78,7 +78,7 @@ async function getFigmaExports(fileId, nodeId = null) {
 
     const { name: fileName, lastModified, document } = fileResponse.data;
     console.log('✅ File fetched:', fileName);
-    
+
     let nodesToExport = [];
 
     if (nodeId) {
@@ -96,13 +96,13 @@ async function getFigmaExports(fileId, nodeId = null) {
       // Strategy 2: If no frames, look inside CANVAS/SECTION/GROUP nodes
       if (nodesToExport.length === 0) {
         console.log('⚠️ No top-level frames found, looking inside CANVAS/SECTION nodes...');
-        
+
         document.children.forEach(parent => {
           console.log(`  📂 Checking "${parent.name}" (type: ${parent.type})`);
-          
+
           if (parent.children && Array.isArray(parent.children)) {
             console.log(`    - Has ${parent.children.length} children`);
-            
+
             // Get all children from CANVAS/SECTION, not just frames
             const childNodes = parent.children
               .filter(n => {
@@ -114,7 +114,7 @@ async function getFigmaExports(fileId, nodeId = null) {
                 console.log(`      ✓ Found "${n.name}" (${n.type})`);
                 return n.id;
               });
-            
+
             nodesToExport.push(...childNodes);
           }
         });
@@ -149,12 +149,12 @@ async function getFigmaExports(fileId, nodeId = null) {
     );
 
    console.log('✅ Export response received');
-    
+
     // IMPORTANT: Figma API returns images under .meta.images, not directly under .images
     const images = exportResponse.data.meta?.images || exportResponse.data.images;
-    
+
     console.log('📊 Images in response:', images ? Object.keys(images).length : 'undefined');
-    
+
     if (!images || Object.keys(images).length === 0) {
       console.error('❌ No images in Figma response:', JSON.stringify(exportResponse.data, null, 2));
       return { fileName, lastModified, exports: {} };
@@ -163,7 +163,7 @@ async function getFigmaExports(fileId, nodeId = null) {
     return {
       fileName,
       lastModified,
-      exports: images,  // ← Changed from exportResponse.data.images
+      exports: images,
     };
 
   } catch (err) {
@@ -177,87 +177,84 @@ async function getFigmaExports(fileId, nodeId = null) {
 
 // ─────────────────────────────────────────────
 // Upload image buffer to Content Hub
+// Uses the upload-session flow (v2.0/upload) which
+// is the proven working approach for this CH instance.
 // ─────────────────────────────────────────────
 async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, token) {
   try {
-    console.log(`📤 Uploading to Content Hub: ${fileName}`);
+    console.log(`📤 Uploading: ${fileName}`);
 
-  const createUrl = `${contentHubBaseUrl}/api/entities`;
-
-console.log("Create URL:", createUrl);
-
-const entityResponse = await axios.post(
-  createUrl,
-  {
-  entitydefinition: {
-  href: "/api/entitydefinitions/M.Asset"
-},
-    properties: {
-      Title: { values: [{ value: fileName, culture: 'en-US' }] },
-    },
-  },
-  {
-    headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' }
-  }
-);
-  console.log("Entity Response");
-console.log(JSON.stringify(entityResponse.data, null, 2));
-
-  const assetId =
-entityResponse.data.id ??
-entityResponse.data.identifier ??
-entityResponse.data.entity?.id ??
-entityResponse.data.asset?.id;
-
-console.log("Asset Id:", assetId);
-    
-    if (!assetId) {
-      console.error('❌ No asset ID in response:', JSON.stringify(entityResponse.data));
-      throw new Error('Entity creation failed - no ID returned');
-    }
-
-    console.log('✅ Entity created:', assetId);
-
-    // Step 2: Upload binary file using FormData
-    console.log('  Step 2: Uploading file...');
-    
-    const formData = new FormData();
-    formData.append('file', imageBuffer, { filename: fileName });
-
-    const uploadUrl =
-`${contentHubBaseUrl}/api/assets/${assetId}/versions/1/renditions/original/file`;
-
-console.log("Upload URL:", uploadUrl);
-
-    const uploadResponse = await axios.post(
-      uploadUrl,
-      formData,
+    // STEP 1 — Request Upload URL
+    const createUploadResponse = await axios.post(
+      `${contentHubBaseUrl}/api/v2.0/upload`,
+      {
+        file_name: fileName,
+        file_size: imageBuffer.length,
+        upload_configuration: {
+          name: "AssetUploadConfiguration"
+        },
+        action: {
+          name: "NewAsset"
+        }
+      },
       {
         headers: {
           'X-Auth-Token': token,
-          ...formData.getHeaders()
-        },
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity,
+          "Content-Type": "application/json"
+        }
       }
     );
 
-    console.log('✅ File uploaded:', assetId);
-    return assetId;
+    console.log("✅ Upload session created");
 
-  } catch(err){
+    const uploadUrl = createUploadResponse.headers.location;
+    if (!uploadUrl) {
+      throw new Error("No upload URL returned");
+    }
 
-    console.error("Status:",
-        err.response?.status);
+    // STEP 2 — Upload File
+    const formData = new FormData();
+    formData.append("file", imageBuffer, fileName);
 
-    console.error("URL:",
-        err.config?.url);
+    await axios.post(
+      `${contentHubBaseUrl}${uploadUrl}`,
+      formData,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...formData.getHeaders()
+        },
+        maxBodyLength: Infinity
+      }
+    );
 
-    console.error("Response:",
-        JSON.stringify(err.response?.data,null,2));
+    console.log("✅ Binary uploaded");
 
+    // STEP 3 — Finalize Upload
+    const finalizeResponse = await axios.post(
+      `${contentHubBaseUrl}/api/v2.0/upload/finalize`,
+      createUploadResponse.data,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    console.log("✅ Upload finalized");
+
+    return finalizeResponse.data.asset_id;
+
+  } catch (err) {
+    console.error(
+      "❌ Upload failed:",
+      err.response?.status,
+      err.response?.data || err.message
+    );
+    console.error("URL:", err.config?.url);
     throw err;
-}
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -289,7 +286,7 @@ app.post('/api/figma/import', async (req, res) => {
   const { figmaFileId, figmaNodeId } = req.body;
 
   if (!figmaFileId) {
-    return res.status(400).json({ 
+    return res.status(400).json({
       error: 'figmaFileId required in body',
       hint: 'Send { "figmaFileId": "your-file-id" } in request body'
     });
@@ -329,11 +326,8 @@ app.post('/api/figma/import', async (req, res) => {
         });
 
         const imageBuffer = Buffer.from(imageResponse.data);
-        const safeNodeId =
-nodeId.replace(/[:\/\\]/g,"_");
-
-const fileName =
-`${figmaData.fileName}_${safeNodeId}.png`;
+        const safeNodeId = nodeId.replace(/[:\/\\]/g, "_");
+        const fileName = `${figmaData.fileName}_${safeNodeId}.png`;
 
         const assetId = await uploadToContentHub(
           imageBuffer,
