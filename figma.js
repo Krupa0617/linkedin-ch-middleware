@@ -263,6 +263,36 @@ async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, toke
 }
 
 // ─────────────────────────────────────────────
+// Extract file ID (and optional node ID) from a Figma URL
+//
+// Handles formats like:
+//   https://www.figma.com/design/{fileId}/{slug}
+//   https://www.figma.com/file/{fileId}/{slug}?node-id=1-2
+//   https://www.figma.com/proto/{fileId}/{slug}?node-id=1%3A2
+// ─────────────────────────────────────────────
+function parseFigmaUrl(url) {
+  try {
+    const parsed = new URL(url);
+    // Path: /design/{fileId}/... or /file/{fileId}/... or /proto/{fileId}/...
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    // After the type segment (design/file/proto) comes the file ID
+    const typeIndex = segments.findIndex(s => ['design', 'file', 'proto'].includes(s));
+    if (typeIndex === -1 || typeIndex + 1 >= segments.length) {
+      return null;
+    }
+    const fileId = segments[typeIndex + 1];
+    if (!fileId || fileId.length < 10) return null;
+
+    // Extract optional node-id from query string
+    const nodeId = parsed.searchParams.get('node-id') || null;
+
+    return { fileId, nodeId };
+  } catch {
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────
 // GET — test connection
 // ─────────────────────────────────────────────
 app.get('/api/figma/import', (req, res) => {
@@ -288,12 +318,28 @@ app.post('/api/figma/import', async (req, res) => {
     return res.status(500).json({ error: 'FIGMA_ACCESS_TOKEN not configured' });
   }
 
-  const { figmaFileId, figmaNodeId } = req.body;
+  let { figmaFileId, figmaNodeId, figmaUrl } = req.body;
+
+  // Accept either a raw file ID or a full Figma URL
+  if (!figmaFileId && figmaUrl) {
+    const parsed = parseFigmaUrl(figmaUrl);
+    if (!parsed) {
+      return res.status(400).json({
+        error: 'Invalid Figma URL',
+        hint: 'Provide a valid Figma URL like https://www.figma.com/design/{fileId}/{slug}'
+      });
+    }
+    figmaFileId = parsed.fileId;
+    if (parsed.nodeId && !figmaNodeId) {
+      figmaNodeId = parsed.nodeId;
+    }
+    console.log('🔗 Parsed Figma URL → fileId:', figmaFileId, 'nodeId:', figmaNodeId || '(none)');
+  }
 
   if (!figmaFileId) {
     return res.status(400).json({
-      error: 'figmaFileId required in body',
-      hint: 'Send { "figmaFileId": "your-file-id" } in request body'
+      error: 'figmaFileId or figmaUrl required in body',
+      hint: 'Send { "figmaFileId": "your-file-id" } or { "figmaUrl": "https://www.figma.com/design/..." }'
     });
   }
 
