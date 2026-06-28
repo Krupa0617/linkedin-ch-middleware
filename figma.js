@@ -189,7 +189,9 @@ console.log("Create URL:", createUrl);
 const entityResponse = await axios.post(
   createUrl,
   {
-    entitydefinition: { href: `${contentHubBaseUrl}/api/v2/entitydefinitions/M.Asset` },
+    entitydefinition: {
+    identifier: "M.Asset"
+},
     properties: {
       Title: { values: [{ value: fileName, culture: 'en-US' }] },
     },
