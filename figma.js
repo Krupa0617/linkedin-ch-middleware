@@ -216,8 +216,13 @@ async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, toke
     const formData = new FormData();
     formData.append("file", imageBuffer, fileName);
 
+    // The location header may be absolute or relative depending on the CH version
+    const binaryUploadUrl = uploadUrl.startsWith('http')
+      ? uploadUrl
+      : `${contentHubBaseUrl}${uploadUrl}`;
+
     await axios.post(
-      `${contentHubBaseUrl}${uploadUrl}`,
+      binaryUploadUrl,
       formData,
       {
         headers: {
