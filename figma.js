@@ -189,9 +189,7 @@ console.log("Create URL:", createUrl);
 const entityResponse = await axios.post(
   createUrl,
   {
-    entitydefinition: {
-    identifier: "M.Asset"
-},
+   entitydefinition: "M.Asset",
     properties: {
       Title: { values: [{ value: fileName, culture: 'en-US' }] },
     },
