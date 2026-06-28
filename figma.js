@@ -2,6 +2,7 @@ import express from 'express';
 import axios from 'axios';
 import dotenv from 'dotenv';
 import cors from 'cors';
+import FormData from "form-data";
 
 dotenv.config();
 const app = express();
@@ -181,10 +182,12 @@ async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, toke
   try {
     console.log(`📤 Uploading to Content Hub: ${fileName}`);
 
-    // Step 1: Create asset entity
-    console.log('  Step 1: Creating entity...');
-   const entityResponse = await axios.post(
-  `${contentHubBaseUrl}/api/v2/entities`,
+  const createUrl = `${contentHubBaseUrl}/api/entities`;
+
+console.log("Create URL:", createUrl);
+
+const entityResponse = await axios.post(
+  createUrl,
   {
     entitydefinition: { href: `${contentHubBaseUrl}/api/v2/entitydefinitions/M.Asset` },
     properties: {
@@ -195,10 +198,16 @@ async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, toke
     headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' }
   }
 );
-    console.log('  Entity response status:', entityResponse.status);
-    console.log('  Entity response data:', JSON.stringify(entityResponse.data, null, 2));
+  console.log("Entity Response");
+console.log(JSON.stringify(entityResponse.data, null, 2));
 
-    const assetId = entityResponse.data?.id || entityResponse.data?.[0]?.id;
+  const assetId =
+entityResponse.data.id ??
+entityResponse.data.identifier ??
+entityResponse.data.entity?.id ??
+entityResponse.data.asset?.id;
+
+console.log("Asset Id:", assetId);
     
     if (!assetId) {
       console.error('❌ No asset ID in response:', JSON.stringify(entityResponse.data));
@@ -210,12 +219,16 @@ async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, toke
     // Step 2: Upload binary file using FormData
     console.log('  Step 2: Uploading file...');
     
-    const FormData = require('form-data');
     const formData = new FormData();
     formData.append('file', imageBuffer, { filename: fileName });
 
+    const uploadUrl =
+`${contentHubBaseUrl}/api/assets/${assetId}/versions/1/renditions/original/file`;
+
+console.log("Upload URL:", uploadUrl);
+
     const uploadResponse = await axios.post(
-      `${contentHubBaseUrl}/api/v2/assets/${assetId}/versions/1/renditions/original/file`,
+      uploadUrl,
       formData,
       {
         headers: {
@@ -230,10 +243,19 @@ async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, toke
     console.log('✅ File uploaded:', assetId);
     return assetId;
 
-  } catch (err) {
-    console.error('❌ Content Hub upload failed:', err.response?.status, err.response?.data || err.message);
+  } catch(err){
+
+    console.error("Status:",
+        err.response?.status);
+
+    console.error("URL:",
+        err.config?.url);
+
+    console.error("Response:",
+        JSON.stringify(err.response?.data,null,2));
+
     throw err;
-  }
+}
 }
 
 // ─────────────────────────────────────────────
@@ -305,7 +327,11 @@ app.post('/api/figma/import', async (req, res) => {
         });
 
         const imageBuffer = Buffer.from(imageResponse.data);
-        const fileName = `${figmaData.fileName}_${nodeId}.png`;
+        const safeNodeId =
+nodeId.replace(/[:\/\\]/g,"_");
+
+const fileName =
+`${figmaData.fileName}_${safeNodeId}.png`;
 
         const assetId = await uploadToContentHub(
           imageBuffer,
