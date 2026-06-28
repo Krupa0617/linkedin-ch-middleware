@@ -13,8 +13,8 @@ app.use(cors());
 const {
   FIGMA_ACCESS_TOKEN,
   CONTENT_HUB_URL,
-  "dipak.b@biztechnosys.com",
-  "Dipak@123",
+  CONTENT_HUB_USERNAME,
+  CONTENT_HUB_PASSWORD,
   API_SECRET_KEY,
 } = process.env;
 
