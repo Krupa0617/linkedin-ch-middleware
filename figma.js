@@ -78,16 +78,20 @@ async function getFigmaExports(fileId, nodeId = null) {
     console.log('✅ File fetched:', fileName);
 
     let nodesToExport = [];
+    const nodeNames = {}; // nodeId → human-readable name
 
     if (nodeId) {
-      // If specific node ID provided, use it
+      // If specific node ID provided, use it — look up its name
       nodesToExport = [nodeId];
-      console.log('✅ Using specific node ID:', nodeId);
+      nodeNames[nodeId] = findNodeName(document, nodeId) || `Node_${nodeId}`;
+      console.log('✅ Using specific node ID:', nodeId, '→', nodeNames[nodeId]);
     } else {
       // Strategy 1: Look for FRAME, COMPONENT, BOARD at top level
-      nodesToExport = document.children
-        .filter(n => ['FRAME', 'COMPONENT', 'BOARD', 'SECTION'].includes(n.type))
-        .map(n => n.id);
+      const topLevel = document.children.filter(n =>
+        ['FRAME', 'COMPONENT', 'BOARD', 'SECTION'].includes(n.type)
+      );
+      topLevel.forEach(n => { nodeNames[n.id] = n.name; });
+      nodesToExport = topLevel.map(n => n.id);
 
       console.log('✅ Top-level exportable nodes found:', nodesToExport.length);
 
@@ -101,17 +105,14 @@ async function getFigmaExports(fileId, nodeId = null) {
           if (parent.children && Array.isArray(parent.children)) {
             console.log(`    - Has ${parent.children.length} children`);
 
-            const childNodes = parent.children
-              .filter(n => {
-                const exportableTypes = ['FRAME', 'COMPONENT', 'GROUP', 'BOARD', 'RECTANGLE', 'TEXT', 'IMAGE'];
-                return exportableTypes.includes(n.type);
-              })
-              .map(n => {
+            parent.children.forEach(n => {
+              const exportableTypes = ['FRAME', 'COMPONENT', 'GROUP', 'BOARD', 'RECTANGLE', 'TEXT', 'IMAGE'];
+              if (exportableTypes.includes(n.type)) {
                 console.log(`      ✓ Found "${n.name}" (${n.type})`);
-                return n.id;
-              });
-
-            nodesToExport.push(...childNodes);
+                nodeNames[n.id] = n.name;
+                nodesToExport.push(n.id);
+              }
+            });
           }
         });
       }
@@ -119,7 +120,10 @@ async function getFigmaExports(fileId, nodeId = null) {
       // Strategy 3: Last resort - export all top-level nodes
       if (nodesToExport.length === 0) {
         console.log('⚠️ No exportable children found, exporting all top-level nodes...');
-        nodesToExport = document.children.map(n => n.id);
+        document.children.forEach(n => {
+          nodeNames[n.id] = n.name;
+          nodesToExport.push(n.id);
+        });
       }
     }
 
@@ -127,7 +131,7 @@ async function getFigmaExports(fileId, nodeId = null) {
 
     if (nodesToExport.length === 0) {
       console.warn('⚠️ No nodes found to export');
-      return { fileName, lastModified, exports: {} };
+      return { fileName, lastModified, exports: {}, nodeNames: {} };
     }
 
     // Get export URLs
@@ -153,13 +157,14 @@ async function getFigmaExports(fileId, nodeId = null) {
 
     if (!images || Object.keys(images).length === 0) {
       console.error('❌ No images in Figma response:', JSON.stringify(exportResponse.data, null, 2));
-      return { fileName, lastModified, exports: {} };
+      return { fileName, lastModified, exports: {}, nodeNames: {} };
     }
 
     return {
       fileName,
       lastModified,
       exports: images,
+      nodeNames,
     };
 
   } catch (err) {
@@ -169,6 +174,21 @@ async function getFigmaExports(fileId, nodeId = null) {
     }
     throw err;
   }
+}
+
+/**
+ * Recursively searches the Figma document tree for a node by its ID,
+ * and returns its human-readable name.
+ */
+function findNodeName(node, targetId) {
+  if (node.id === targetId) return node.name;
+  if (node.children) {
+    for (const child of node.children) {
+      const found = findNodeName(child, targetId);
+      if (found) return found;
+    }
+  }
+  return null;
 }
 
 // ─────────────────────────────────────────────
@@ -371,8 +391,11 @@ app.post('/api/figma/import', async (req, res) => {
     // Step 3: For each exported image, download + upload to CH
     const uploadedAssets = [];
     const failedAssets = [];
+    const nameCounts = {};  // track duplicates: "Color" → 3
+    let imageIndex = 0;
 
     for (const [nodeId, exportUrl] of Object.entries(figmaData.exports)) {
+      imageIndex++;
       try {
         console.log(`📥 Downloading Figma export: ${exportUrl}`);
 
@@ -382,7 +405,23 @@ app.post('/api/figma/import', async (req, res) => {
         });
 
         const imageBuffer = Buffer.from(imageResponse.data);
-        const fileName = `${figmaData.fileName}.png`;
+
+        // Build the file name from the Figma node name
+        // If the export key doesn't match any known node (Figma sometimes
+        // returns version hashes instead of node IDs), fall back to a counter.
+        const rawName = figmaData.nodeNames?.[nodeId];
+        const displayName = rawName || `${figmaData.fileName} ${imageIndex}`;
+
+        // Handle duplicate names (e.g. 6 "Color" rectangles → Color, Color 2, …)
+        const count = nameCounts[displayName] = (nameCounts[displayName] || 0) + 1;
+        const dedupedName = count > 1 ? `${displayName} ${count}` : displayName;
+
+        // Sanitise: remove chars unsafe for filenames, collapse spaces
+        const safeName = dedupedName
+          .replace(/[<>:"/\\|?*]/g, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        const fileName = `${safeName}.png`;
 
         const assetId = await uploadToContentHub(
           imageBuffer,
