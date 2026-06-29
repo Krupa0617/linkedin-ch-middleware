@@ -78,57 +78,58 @@ async function getFigmaExports(fileId, nodeId = null) {
     console.log('✅ File fetched:', fileName);
 
     let nodesToExport = [];
+    const nodeIdToNameMap = {}; // Track node ID → name mapping
 
+    // ─────────────────────────────────────────────
+    // If specific node ID provided, use it
+    // ─────────────────────────────────────────────
     if (nodeId) {
-      // If specific node ID provided, use it
       nodesToExport = [nodeId];
       console.log('✅ Using specific node ID:', nodeId);
-    } else {
-      // Strategy 1: Look for FRAME, COMPONENT, BOARD at top level
-      nodesToExport = document.children
-        .filter(n => ['FRAME', 'COMPONENT', 'BOARD', 'SECTION'].includes(n.type))
-        .map(n => n.id);
-
-      console.log('✅ Top-level exportable nodes found:', nodesToExport.length);
-
-      // Strategy 2: If no frames, look inside CANVAS/SECTION/GROUP nodes
-      if (nodesToExport.length === 0) {
-        console.log('⚠️ No top-level frames found, looking inside CANVAS/SECTION nodes...');
-
-        document.children.forEach(parent => {
-          console.log(`  📂 Checking "${parent.name}" (type: ${parent.type})`);
-
-          if (parent.children && Array.isArray(parent.children)) {
-            console.log(`    - Has ${parent.children.length} children`);
-
-            const childNodes = parent.children
-              .filter(n => {
-                const exportableTypes = ['FRAME', 'COMPONENT', 'GROUP', 'BOARD', 'RECTANGLE', 'TEXT', 'IMAGE'];
-                return exportableTypes.includes(n.type);
-              })
-              .map(n => {
-                console.log(`      ✓ Found "${n.name}" (${n.type})`);
-                return n.id;
-              });
-
-            nodesToExport.push(...childNodes);
+      
+      // Find the node name recursively
+      function findNodeName(parent, targetId) {
+        if (parent.id === targetId) return parent.name;
+        if (parent.children) {
+          for (const child of parent.children) {
+            const found = findNodeName(child, targetId);
+            if (found) return found;
           }
-        });
+        }
+        return null;
       }
-
-      // Strategy 3: Last resort - export all top-level nodes
-      if (nodesToExport.length === 0) {
-        console.log('⚠️ No exportable children found, exporting all top-level nodes...');
-        nodesToExport = document.children.map(n => n.id);
+      
+      const nodeName = findNodeName(document, nodeId);
+      if (nodeName) {
+        nodeIdToNameMap[nodeId] = nodeName;
+        console.log(`✓ Mapped ${nodeId} → "${nodeName}"`);
       }
+    } else {
+      // Recursive function to find all exportable nodes at any depth
+      function findExportableNodes(parent) {
+        const exportableTypes = ['FRAME', 'COMPONENT', 'GROUP', 'BOARD', 'SECTION'];
+        
+        if (exportableTypes.includes(parent.type)) {
+          nodesToExport.push(parent.id);
+          nodeIdToNameMap[parent.id] = parent.name;
+          console.log(`✓ Found "${parent.name}" (${parent.type})`);
+        }
+        
+        if (parent.children && Array.isArray(parent.children)) {
+          parent.children.forEach(child => findExportableNodes(child));
+        }
+      }
+      
+      document.children.forEach(child => findExportableNodes(child));
+      console.log('✅ Total nodes to export:', nodesToExport.length);
     }
-
-    console.log('✅ Total nodes to export:', nodesToExport.length);
 
     if (nodesToExport.length === 0) {
       console.warn('⚠️ No nodes found to export');
-      return { fileName, lastModified, exports: {} };
+      return { fileName, lastModified, exports: {}, nodeIdToNameMap };
     }
+
+    console.log('✅ Total nodes to export:', nodesToExport.length);
 
     // Get export URLs
     console.log('📤 Requesting exports for nodes:', nodesToExport);
@@ -144,22 +145,20 @@ async function getFigmaExports(fileId, nodeId = null) {
       }
     );
 
-    console.log('✅ Export response received');
-
-    // IMPORTANT: Figma API returns images under .meta.images, not directly under .images
     const images = exportResponse.data.meta?.images || exportResponse.data.images;
 
     console.log('📊 Images in response:', images ? Object.keys(images).length : 'undefined');
 
     if (!images || Object.keys(images).length === 0) {
       console.error('❌ No images in Figma response:', JSON.stringify(exportResponse.data, null, 2));
-      return { fileName, lastModified, exports: {} };
+      return { fileName, lastModified, exports: {}, nodeIdToNameMap };
     }
 
     return {
       fileName,
       lastModified,
       exports: images,
+      nodeIdToNameMap, // Return the mapping
     };
 
   } catch (err) {
@@ -232,25 +231,25 @@ async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, toke
     console.log("✅ Binary uploaded");
 
     // STEP 3 — Finalize Upload
-const finalizeResponse = await axios.post(
-  `${contentHubBaseUrl}/api/v2.0/upload/finalize`,
-  {
-    ...createUploadResponse.data,
-    // Add the intended asset name and title
-    name: fileName.replace(/\.png$/, ''), // Remove extension for the ID
-    title: fileName,
-    entity: {
-      name: fileName.replace(/\.png$/, ''),
-      title: fileName,
-    }
-  },
-  {
-    headers: {
-      'X-Auth-Token': token,
-      "Content-Type": "application/json"
-    }
-  }
-);
+    const finalizeResponse = await axios.post(
+      `${contentHubBaseUrl}/api/v2.0/upload/finalize`,
+      {
+        ...createUploadResponse.data,
+        // Add the intended asset name and title
+        name: fileName.replace(/\.png$/, ''), // Remove extension for the ID
+        title: fileName,
+        entity: {
+          name: fileName.replace(/\.png$/, ''),
+          title: fileName,
+        }
+      },
+      {
+        headers: {
+          'X-Auth-Token': token,
+          "Content-Type": "application/json"
+        }
+      }
+    );
 
     console.log("✅ Upload finalized");
 
@@ -381,7 +380,7 @@ app.post('/api/figma/import', async (req, res) => {
     const uploadedAssets = [];
     const failedAssets = [];
 
-    for (const [nodeId, exportUrl] of Object.entries(figmaData.exports)) {
+    for (const [exportId, exportUrl] of Object.entries(figmaData.exports)) {
       try {
         console.log(`📥 Downloading Figma export: ${exportUrl}`);
 
@@ -391,8 +390,11 @@ app.post('/api/figma/import', async (req, res) => {
         });
 
         const imageBuffer = Buffer.from(imageResponse.data);
-        const safeNodeId = nodeId.replace(/[:\/\\]/g, "_");
-        const fileName = `${figmaData.fileName}_${safeNodeId}.png`;
+        
+        // Look up the actual node name from the mapping
+        const nodeName = figmaData.nodeIdToNameMap[exportId] || exportId;
+        const safeNodeName = nodeName.replace(/[^a-zA-Z0-9_\-]/g, "_"); // Sanitize special chars
+        const fileName = `${figmaData.fileName}_${safeNodeName}.png`;
 
         const assetId = await uploadToContentHub(
           imageBuffer,
@@ -401,12 +403,12 @@ app.post('/api/figma/import', async (req, res) => {
           chToken
         );
 
-        uploadedAssets.push({ nodeId, assetId, fileName });
+        uploadedAssets.push({ nodeId: exportId, nodeName, assetId, fileName });
         console.log(`✅ Successfully uploaded: ${fileName}`);
 
       } catch (err) {
-        console.error(`⚠️ Failed to upload ${nodeId}:`, err.message);
-        failedAssets.push({ nodeId, error: err.message });
+        console.error(`⚠️ Failed to upload ${exportId}:`, err.message);
+        failedAssets.push({ nodeId: exportId, error: err.message });
       }
     }
 
