@@ -382,8 +382,7 @@ app.post('/api/figma/import', async (req, res) => {
         });
 
         const imageBuffer = Buffer.from(imageResponse.data);
-        const safeNodeId = nodeId.replace(/[:\/\\]/g, "_");
-        const fileName = `${figmaData.fileName}_${safeNodeId}.png`;
+        const fileName = `${figmaData.fileName}.png`;
 
         const assetId = await uploadToContentHub(
           imageBuffer,
