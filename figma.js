@@ -232,16 +232,25 @@ async function uploadToContentHub(imageBuffer, fileName, contentHubBaseUrl, toke
     console.log("✅ Binary uploaded");
 
     // STEP 3 — Finalize Upload
-    const finalizeResponse = await axios.post(
-      `${contentHubBaseUrl}/api/v2.0/upload/finalize`,
-      createUploadResponse.data,
-      {
-        headers: {
-          'X-Auth-Token': token,
-          "Content-Type": "application/json"
-        }
-      }
-    );
+const finalizeResponse = await axios.post(
+  `${contentHubBaseUrl}/api/v2.0/upload/finalize`,
+  {
+    ...createUploadResponse.data,
+    // Add the intended asset name and title
+    name: fileName.replace(/\.png$/, ''), // Remove extension for the ID
+    title: fileName,
+    entity: {
+      name: fileName.replace(/\.png$/, ''),
+      title: fileName,
+    }
+  },
+  {
+    headers: {
+      'X-Auth-Token': token,
+      "Content-Type": "application/json"
+    }
+  }
+);
 
     console.log("✅ Upload finalized");
 
