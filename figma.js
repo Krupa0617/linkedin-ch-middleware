@@ -13,8 +13,6 @@ app.use(cors());
 const {
   FIGMA_ACCESS_TOKEN,
   CONTENT_HUB_URL,
-  CONTENT_HUB_USERNAME,
-  CONTENT_HUB_PASSWORD,
   API_SECRET_KEY,
 } = process.env;
 
@@ -42,8 +40,8 @@ async function getContentHubToken(contentHubBaseUrl) {
     const response = await axios.post(
       `${contentHubBaseUrl}/api/authenticate`,
       {
-        user_name: CONTENT_HUB_USERNAME,
-        password: CONTENT_HUB_PASSWORD,
+        user_name: "dipak.b@biztechnosys.com",
+        password: "Dipak@123",
       },
       { headers: { 'Content-Type': 'application/json' } }
     );
