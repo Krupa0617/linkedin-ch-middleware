@@ -442,37 +442,36 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
       return;
     }
 
-    // ── Strategy 1: POST each product to OData navigation property endpoint ──
-    // This is the standard OData v4 way to add items to a collection navigation property:
-    //   POST /api/entities/{parentId}/{navProp}
+    // ── Strategy 1: POST to OData $ref endpoint → standard OData v4 pattern ──
+    //   POST /api/entities/{parentId}/{navProp}/$ref
     //   Body: { "@odata.id": "https://instance/api/entities/{childId}" }
     let allSucceeded = true;
     for (const asset of added) {
       try {
-        const navRes = await axios.post(
-          `https://${instance}/api/entities/${assetId}/${RELATION_TYPE}`,
+        const refRes = await axios.post(
+          `https://${instance}/api/entities/${assetId}/${RELATION_TYPE}/$ref`,
           { '@odata.id': `https://${instance}/api/entities/${asset.id}` },
-          { headers: { ...chHeaders(token), 'Content-Type': 'application/json' }, timeout: 15000, validateStatus: s => true }
+          { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
         );
-        console.log(`[Relation] POST ${RELATION_TYPE} for #${asset.id}: status=${navRes.status}, data=${JSON.stringify(navRes.data || '').substring(0, 300)}`);
-        if (navRes.status >= 200 && navRes.status < 300) {
-          console.log(`[Relation] ✅ #${assetId} → #${asset.id} via POST navigation property`);
+        console.log(`[Relation] POST ${RELATION_TYPE}/$ref for #${asset.id}: status=${refRes.status}, data=${JSON.stringify(refRes.data || '').substring(0, 500)}`);
+        if (refRes.status >= 200 && refRes.status < 300) {
+          console.log(`[Relation] ✅ #${assetId} → #${asset.id} via POST $ref`);
         } else {
           allSucceeded = false;
-          console.log(`[Relation] ⚠️ POST ${RELATION_TYPE} for #${asset.id} returned ${navRes.status}`);
+          console.log(`[Relation] ⚠️ POST $ref for #${asset.id} returned ${refRes.status}`);
         }
-      } catch (navErr) {
+      } catch (refErr) {
         allSucceeded = false;
-        console.log(`[Relation] ❌ POST ${RELATION_TYPE} for #${asset.id} threw: ${navErr.message}`);
-        if (navErr.response) {
-          console.log(`[Relation]   status=${navErr.response.status}, data=${JSON.stringify(navErr.response.data || '').substring(0, 500)}, headers=${JSON.stringify(navErr.response.headers || {})}`);
+        console.log(`[Relation] ❌ POST $ref for #${asset.id} threw: ${refErr.message}`);
+        if (refErr.response) {
+          console.log(`[Relation]   status=${refErr.response.status}, data=${JSON.stringify(refErr.response.data || '').substring(0, 500)}, headers=${JSON.stringify(refErr.response.headers || {})}`);
         }
       }
     }
     if (allSucceeded) return;
 
     // ── Strategy 2: PUT with @odata.bind (absolute URLs) ──
-    console.log(`[Relation] POST approach had failures, trying PUT with @odata.bind...`);
+    console.log(`[Relation] $ref approach had failures, trying PUT with @odata.bind...`);
     const odataRelName = `${RELATION_TYPE}@odata.bind`;
     const entityUrls = relatedAssets.map(r => `https://${instance}/api/entities/${r.id}`);
     const putBody = {
@@ -486,9 +485,9 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
       putBody,
       { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
     );
-    console.log(`[Relation] PUT response: status=${putRes.status}, statusText="${putRes.statusText}", headers=${JSON.stringify(putRes.headers?.['content-type'] || putRes.headers || 'none')}, data=${JSON.stringify(putRes.data || '').substring(0, 500)}, dataLength=${JSON.stringify(putRes.data || '').length}`);
+    console.log(`[Relation] PUT response: status=${putRes.status}, statusText="${putRes.statusText}", data=${JSON.stringify(putRes.data || '').substring(0, 500)}`);
 
-    // ── Verify: re-GET the entity and check if relation was actually saved ──
+    // ── Verify: re-GET and check if relation was actually saved ──
     console.log(`[Relation] Verifying by re-fetching entity #${assetId}...`);
     try {
       const verifyRes = await axios.get(
@@ -499,9 +498,21 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
       console.log(`[Relation] Verify: ${RELATION_TYPE} on #${assetId} = ${JSON.stringify(updatedRelations).substring(0, 500)}`);
       if (Array.isArray(updatedRelations)) {
         const found = updatedRelations.filter(r => added.some(a => Number(r.id) === Number(a.id)));
-        console.log(`[Relation] Verify: ${found.length}/${added.length} product(s) found in relation after update`);
+        console.log(`[Relation] Verify: ${found.length}/${added.length} product(s) found in relation`);
       } else {
-        console.log(`[Relation] Verify: ${RELATION_TYPE} is not an array: ${typeof updatedRelations}`);
+        console.log(`[Relation] Verify: ${RELATION_TYPE} is not an array: ${typeof updatedRelations} → value=${JSON.stringify(updatedRelations).substring(0, 300)}`);
+        // Also try fetching the relation endpoint directly
+        if (updatedRelations?.href) {
+          try {
+            const relEndpointRes = await axios.get(
+              updatedRelations.href,
+              { headers: chHeaders(token), timeout: 10000, validateStatus: s => true }
+            );
+            console.log(`[Relation] Verify via relation endpoint: status=${relEndpointRes.status}, data=${JSON.stringify(relEndpointRes.data || '').substring(0, 500)}`);
+          } catch (relEpErr) {
+            console.log(`[Relation] Verify via relation endpoint failed: ${relEpErr.message}`);
+          }
+        }
       }
     } catch (verifyErr) {
       console.log(`[Relation] Verify GET failed: ${verifyErr.message}`);
