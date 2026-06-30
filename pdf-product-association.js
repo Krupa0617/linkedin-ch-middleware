@@ -279,41 +279,90 @@ async function extractPDFContent(pdfBuffer) {
 // ==================== SEARCH RELATED ASSETS ====================
 
 async function searchRelatedAssets(pdfContent, token, excludeId, instance) {
-  const { keywords } = pdfContent;
-  if (!keywords || keywords.length === 0) return [];
+  const { keywords, productNumbers } = pdfContent;
+  if ((!keywords || keywords.length === 0) && (!productNumbers || productNumbers.length === 0)) return [];
 
   const matched = [];
   const seen = new Set();
-  const topKw = keywords.slice(0, 12);
+  const topKw = [...new Set([...keywords.slice(0, 12), ...productNumbers.slice(0, 5)])];
 
-  for (const keyword of topKw) {
-    try {
-      const resp = await axios.get(
-        `https://${instance}/api/entities`,
-        {
-          params: {
-            query: `entitydefinition:M.Asset AND name contains '${keyword.replace(/[\\"*()']/g, '')}'`,
-            limit: 5,
-            select: 'id,name,description,tags,Title',
-          },
-          headers: chHeaders(token),
-          timeout: 10000,
-        },
-      );
+  for (const searchTerm of topKw) {
+    const sanitized = searchTerm.replace(/[\\"'*()]/g, '');
+    let found = false;
 
-      for (const item of resp.data?.items || []) {
-        const id = String(item.id);
-        const name = item.properties?.Name || item.properties?.Title || item.name || '';
-        if (id === String(excludeId) || seen.has(id)) continue;
-        seen.add(id);
-
-        const confidence = scoreMatch(keyword, item);
-        if (confidence >= CONFIDENCE_MIN) {
-          matched.push({ id, name, confidence, matchedKeyword: keyword });
+    // Strategy 1 — POST /api/query (M.Query)
+    if (!found) {
+      try {
+        const resp = await axios.post(
+          `https://${instance}/api/query`,
+          { query: `FROM M.Asset WHERE name CONTAINS '${sanitized}' SELECT Name, Title, Description` },
+          { headers: chHeaders(token), timeout: 10000 },
+        );
+        for (const item of resp.data?.items || resp.data?.data || []) {
+          const id = String(item.id || item.Id);
+          const name = item.properties?.Name || item.properties?.Title || item.name || item.Name || '';
+          if (id === String(excludeId) || seen.has(id)) continue;
+          seen.add(id);
+          const confidence = scoreMatch(searchTerm, item);
+          if (confidence >= CONFIDENCE_MIN) matched.push({ id, name, confidence, matchedKeyword: searchTerm });
         }
+        if (resp.data?.items?.length || resp.data?.data?.length) found = true;
+      } catch (err) {
+        console.log(`[Search] POST /api/query "${searchTerm}": ${err.message}`);
       }
-    } catch (err) {
-      console.warn(`[Search] "${keyword}": ${err.message}`);
+    }
+
+    // Strategy 2 — GET /api/search
+    if (!found) {
+      try {
+        const resp = await axios.get(
+          `https://${instance}/api/search`,
+          {
+            params: { q: sanitized, entitydefinition: 'M.Asset', limit: 5 },
+            headers: chHeaders(token),
+            timeout: 10000,
+          },
+        );
+        for (const item of resp.data?.items || resp.data?.results || []) {
+          const id = String(item.id || item.Id);
+          const name = item.properties?.Name || item.properties?.Title || item.name || item.Name || '';
+          if (id === String(excludeId) || seen.has(id)) continue;
+          seen.add(id);
+          const confidence = scoreMatch(searchTerm, item);
+          if (confidence >= CONFIDENCE_MIN) matched.push({ id, name, confidence, matchedKeyword: searchTerm });
+        }
+        if (resp.data?.items?.length || resp.data?.results?.length) found = true;
+      } catch (err) {
+        console.log(`[Search] GET /api/search "${searchTerm}": ${err.message}`);
+      }
+    }
+
+    // Strategy 3 — GET /api/entities with OData filter
+    if (!found) {
+      try {
+        const resp = await axios.get(
+          `https://${instance}/api/entities`,
+          {
+            params: {
+              query: `entitydefinition:M.Asset AND name contains '${sanitized}'`,
+              limit: 5,
+              select: 'id,name,description,tags,Title',
+            },
+            headers: chHeaders(token),
+            timeout: 10000,
+          },
+        );
+        for (const item of resp.data?.items || []) {
+          const id = String(item.id);
+          const name = item.properties?.Name || item.properties?.Title || item.name || '';
+          if (id === String(excludeId) || seen.has(id)) continue;
+          seen.add(id);
+          const confidence = scoreMatch(searchTerm, item);
+          if (confidence >= CONFIDENCE_MIN) matched.push({ id, name, confidence, matchedKeyword: searchTerm });
+        }
+      } catch (err) {
+        console.log(`[Search] GET /api/entities "${searchTerm}": ${err.message}`);
+      }
     }
   }
 
@@ -398,16 +447,15 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
 // ==================== METADATA ====================
 
 async function updateAssetMetadata(assetId, metadata, token, instance) {
+  const logPrefix = `[Metadata #${assetId}]`;
   try {
+    // Strategy 1 — PUT full entity with merged properties
     const entityRes = await axios.get(
       `https://${instance}/api/entities/${assetId}`,
       { headers: chHeaders(token), timeout: 8000 }
     );
 
-    // Content Hub returns properties as an object {key: value}, not an array [{name, value}]
     const current = entityRes.data.properties || {};
-
-    // Merge metadata into current properties object
     Object.entries(metadata).forEach(([key, value]) => {
       current[key] = value;
     });
@@ -417,9 +465,21 @@ async function updateAssetMetadata(assetId, metadata, token, instance) {
       { properties: current },
       { headers: chHeaders(token), timeout: 8000 }
     );
-    console.log(`[Metadata] Updated for #${assetId}`);
-  } catch (err) {
-    console.warn('[Metadata] Failed:', err.message);
+    console.log(`${logPrefix} Updated via PUT`);
+  } catch (putErr) {
+    // Strategy 2 — Try PATCH instead
+    try {
+      await axios.patch(
+        `https://${instance}/api/entities/${assetId}`,
+        { properties: metadata },
+        { headers: chHeaders(token), timeout: 8000 }
+      );
+      console.log(`${logPrefix} Updated via PATCH`);
+      return;
+    } catch { /* ignore */ }
+
+    // Just warn — metadata update is non-critical
+    console.warn(`${logPrefix} Failed to update metadata: ${putErr.message}`);
   }
 }
 
