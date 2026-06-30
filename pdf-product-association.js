@@ -1,12 +1,6 @@
-import { createRequire } from 'module';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
 import axios from 'axios';
 import express from 'express';
-
-const require = createRequire(import.meta.url);
-const extractText = require('pdf-text-extract');
+import pdfParse from 'pdf-parse';
 
 const app = express();
 app.use(express.json());
@@ -234,72 +228,49 @@ function extractDownloadUrlsFromRenditions(renditionsData, instance, assetId) {
   return urls;
 }
 
-// ==================== PDF PARSING (pdf-text-extract - Node.js native) ====================
+// ==================== PDF PARSING (pdf-parse - pure JS, no system deps) ====================
 
 async function extractPDFContent(pdfBuffer) {
-  const tmpFile = path.join(os.tmpdir(), `pdf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`);
   try {
-    fs.writeFileSync(tmpFile, pdfBuffer);
-    console.log(`[PDF] Saved temp file: ${tmpFile}`);
-  } catch (writeErr) {
-    throw new Error(`Failed to write PDF temp file: ${writeErr.message}`);
+    const data = await pdfParse(pdfBuffer);
+    const text = (data.text || '').substring(0, 3000).trim();
+    const pageCount = data.numpages || 1;
+
+    // Extract product numbers (HIM-XXXX format)
+    const productNumberRegex = /[A-Z]{2,4}-\d{3,6}/g;
+    const foundProductNumbers = text.match(productNumberRegex) || [];
+
+    // Extract keywords by frequency
+    const rawWords = text
+      .toLowerCase()
+      .split(/[\s\n\r,\.\;:!?()"'\-\–—/\\|@#$%^&*+=<>[\]{}~`]+/)
+      .filter(w => w.length >= 4 && w.length <= 50)
+      .filter(w => !/^\d[\d\-_\s]*$/.test(w))
+      .filter(w => !STOP_WORDS.has(w));
+
+    const freq = {};
+    rawWords.forEach(w => { freq[w] = (freq[w] || 0) + 1; });
+    const keywords = [...new Set(rawWords)]
+      .sort((a, b) => (freq[b] - freq[a]) || a.localeCompare(b))
+      .slice(0, 25);
+
+    console.log(`[PDF] Extracted ${text.length} chars, ${keywords.length} keywords from ${pageCount} pages`);
+
+    return {
+      text,
+      pages: pageCount,
+      productNumbers: [...new Set(foundProductNumbers)],
+      keywords,
+      metadata: {
+        title: data.info?.Title || '',
+        author: data.info?.Author || '',
+        subject: '',
+      },
+    };
+  } catch (err) {
+    console.error('[PDF] Error:', err.message);
+    throw new Error(`PDF extraction failed: ${err.message}`);
   }
-
-  return new Promise((resolve, reject) => {
-    try {
-      extractText(tmpFile, (err, pages) => {
-        // Clean up temp file
-        try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
-
-        if (err) {
-          console.error('[PDF] Error extracting:', err.message);
-          return reject(new Error(`PDF extraction failed: ${err.message}`));
-        }
-
-        // pages is an array of text strings, one per page
-        const fullText = Array.isArray(pages) ? pages.join(' ') : String(pages || '');
-        const text = fullText.substring(0, 3000).trim();
-        const pageCount = Array.isArray(pages) ? pages.length : 1;
-
-        // Extract product numbers (HIM-XXXX format)
-        const productNumberRegex = /[A-Z]{2,4}-\d{3,6}/g;
-        const foundProductNumbers = text.match(productNumberRegex) || [];
-
-        // Extract keywords by frequency
-        const rawWords = text
-          .toLowerCase()
-          .split(/[\s\n\r,\.\;:!?()"'\-\–—/\\|@#$%^&*+=<>[\]{}~`]+/)
-          .filter(w => w.length >= 4 && w.length <= 50)
-          .filter(w => !/^\d[\d\-_\s]*$/.test(w))
-          .filter(w => !STOP_WORDS.has(w));
-
-        const freq = {};
-        rawWords.forEach(w => { freq[w] = (freq[w] || 0) + 1; });
-        const keywords = [...new Set(rawWords)]
-          .sort((a, b) => (freq[b] - freq[a]) || a.localeCompare(b))
-          .slice(0, 25);
-
-        console.log(`[PDF] Extracted ${text.length} chars, ${keywords.length} keywords from ${pageCount} pages`);
-
-        resolve({
-          text,
-          pages: pageCount,
-          productNumbers: [...new Set(foundProductNumbers)],
-          keywords,
-          metadata: {
-            title: '',
-            author: '',
-            subject: '',
-          },
-        });
-      });
-    } catch (err) {
-      // Clean up on unexpected error too
-      try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
-      console.error('[PDF] Error:', err.message);
-      reject(new Error(`PDF extraction failed: ${err.message}`));
-    }
-  });
 }
 
 // ==================== SEARCH RELATED ASSETS ====================
