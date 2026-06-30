@@ -85,7 +85,7 @@ function chHeaders(token) {
 
 async function downloadPDF(assetId, token, instance) {
   const assetRes = await axios.get(
-    `https://${instance}/api/v2/entities/${assetId}`,
+    `https://${instance}/api/entities/${assetId}`,
     {
       headers: { 'Authorization': `Bearer ${token}` },
       timeout: 10000
@@ -101,7 +101,7 @@ async function downloadPDF(assetId, token, instance) {
   } else if (renditions?.original?.[0]?.href) {
     downloadUrl = renditions.original[0].href;
   } else {
-    downloadUrl = `https://${instance}/api/v2/entities/${assetId}/file`;
+    downloadUrl = `https://${instance}/api/entities/${assetId}/file`;
   }
 
   console.log('[Download] Downloading from:', downloadUrl);
@@ -180,7 +180,7 @@ async function searchRelatedAssets(pdfContent, token, excludeId, instance) {
   for (const keyword of topKw) {
     try {
       const resp = await axios.get(
-        `https://${instance}/api/v2/entities`,
+        `https://${instance}/api/entities`,
         {
           params: {
             query: `entitydefinition:M.Asset AND name:"*${keyword.replace(/[\\"*()]/g, '')}*"`,
@@ -249,7 +249,7 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
     // Strategy 1 — v2 relations endpoint
     try {
       await axios.post(
-        `https://${instance}/api/v2/relations`,
+        `https://${instance}/api/relations`,
         { relationType: RELATION_TYPE, source: String(assetId), target: String(asset.id), sourceType: 'M.Asset', targetType: 'M.Asset' },
         { headers: chHeaders(token), timeout: 10000 },
       );
@@ -260,7 +260,7 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
     if (!ok) {
       try {
         await axios.post(
-          `https://${instance}/api/v2/entities/${assetId}/relations`,
+          `https://${instance}/api/entities/${assetId}/relations`,
           { relationType: RELATION_TYPE, relatedEntityId: String(asset.id), targetEntityType: 'M.Asset' },
           { headers: chHeaders(token), timeout: 10000 },
         );
@@ -291,7 +291,7 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
 async function updateAssetMetadata(assetId, metadata, token, instance) {
   try {
     const entityRes = await axios.get(
-      `https://${instance}/api/v2/entities/${assetId}`,
+      `https://${instance}/api/entities/${assetId}`,
       { headers: { 'Authorization': `Bearer ${token}` }, timeout: 8000 }
     );
 
