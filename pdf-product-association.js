@@ -278,56 +278,48 @@ async function extractPDFContent(pdfBuffer) {
 
 // ==================== SEARCH RELATED ASSETS ====================
 
-async function searchRelatedAssets(pdfContent, token, excludeId, instance) {
+async function searchRelatedAssets(pdfContent, token, excludeId, instance, pdfFilename) {
   const { keywords, productNumbers } = pdfContent;
   if ((!keywords || keywords.length === 0) && (!productNumbers || productNumbers.length === 0)) return [];
 
   const matched = [];
   const seen = new Set();
-  const topKw = [...new Set([...keywords.slice(0, 12), ...productNumbers.slice(0, 5)])];
 
-  for (const searchTerm of topKw) {
+  // Extract PDF base name (e.g. "Bresol" from "Bresol.pdf") as the primary search term
+  const pdfBaseName = (pdfFilename || '')
+    .replace(/\.pdf$/i, '')
+    .replace(/[\s_\-]+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+  // Build search terms: filename first (most important), then product numbers, then keywords
+  const searchTerms = [];
+  if (pdfBaseName) searchTerms.push(pdfBaseName);
+  searchTerms.push(...productNumbers.slice(0, 5));
+  // Add keywords that are most likely to be product names (short, capitalized-looking)
+  for (const kw of keywords) {
+    if (kw.length >= 3 && kw.length <= 30 && !searchTerms.includes(kw)) {
+      searchTerms.push(kw);
+    }
+    if (searchTerms.length >= 10) break;
+  }
+
+  for (const searchTerm of searchTerms) {
     const sanitized = searchTerm.replace(/[\\"'*()]/g, '');
     let found = false;
 
-    // Strategy 1 — GET /api/entities with no filter (probe endpoint)
-    // then manually filter by keyword in name
-    if (!found) {
-      try {
-        const resp = await axios.get(
-          `https://${instance}/api/entities`,
-          { params: { limit: 20, select: 'id,name,description' }, headers: chHeaders(token), timeout: 10000 },
-        );
-        console.log(`[Search] GET /api/entities (no filter) works! Items:`, resp.data?.items?.length);
-        for (const item of resp.data?.items || []) {
-          const name = (item.properties?.Name || item.properties?.Title || item.name || '').toLowerCase();
-          if (!name.includes(sanitized.toLowerCase())) continue;
-          const id = String(item.id);
-          if (id === String(excludeId) || seen.has(id)) continue;
-          seen.add(id);
-          const confidence = scoreMatch(searchTerm, item);
-          if (confidence >= CONFIDENCE_MIN) matched.push({ id, name: item.properties?.Name || item.name, confidence, matchedKeyword: searchTerm });
-        }
-        found = true;
-      } catch (err) {
-        console.log(`[Search] GET /api/entities (no filter): ${err.message}`);
-      }
-    }
-
-    // Strategy 2 — GET /api/search
+    // Strategy 1 — GET /api/search with fulltext parameter
     if (!found) {
       try {
         const resp = await axios.get(
           `https://${instance}/api/search`,
-          { params: { q: sanitized, entitydefinition: 'M.Asset', limit: 10 }, headers: chHeaders(token), timeout: 10000 },
+          { params: { fulltext: sanitized, entitydefinition: 'M.Asset', take: 10 }, headers: chHeaders(token), timeout: 10000 },
         );
-        console.log(`[Search] GET /api/search "${sanitized}" -> Status: ${resp.status}, keys:`, Object.keys(resp.data || {}).join(', '));
-        // Log a snippet of the response to understand structure
-        const snippet = JSON.stringify(resp.data).substring(0, 400);
-        console.log(`[Search] Response snippet: ${snippet}`);
-        for (const item of resp.data?.items || resp.data?.results || resp.data?.data || resp.data?.hits || []) {
+        const items = resp.data?.items || resp.data?.results || resp.data?.data || [];
+        console.log(`[Search] fulltext="${sanitized}" -> ${items.length} items of ${resp.data?.totalItemCount || 0} total`);
+        for (const item of items) {
           const id = String(item.id || item.Id);
-          const name = item.properties?.Name || item.properties?.Title || item.name || item.Name || '';
+          const name = item.properties?.Title || item.properties?.Name || item.name || item.Name || '';
           if (id === String(excludeId) || seen.has(id)) continue;
           seen.add(id);
           const confidence = scoreMatch(searchTerm, item);
@@ -335,20 +327,21 @@ async function searchRelatedAssets(pdfContent, token, excludeId, instance) {
         }
         found = true;
       } catch (err) {
-        console.log(`[Search] GET /api/search "${sanitized}": ${err.message}`);
+        console.log(`[Search] fulltext="${sanitized}": ${err.message}`);
       }
     }
 
-    // Strategy 3 — GET /api/entities?query=
+    // Strategy 2 — GET /api/search with q parameter (fallback)
     if (!found) {
       try {
         const resp = await axios.get(
-          `https://${instance}/api/entities`,
-          { params: { query: `name contains '${sanitized}'`, limit: 5 }, headers: chHeaders(token), timeout: 10000 },
+          `https://${instance}/api/search`,
+          { params: { q: sanitized, entitydefinition: 'M.Asset', take: 10 }, headers: chHeaders(token), timeout: 10000 },
         );
-        for (const item of resp.data?.items || []) {
-          const id = String(item.id);
-          const name = item.properties?.Name || item.properties?.Title || item.name || '';
+        const items = resp.data?.items || resp.data?.results || resp.data?.data || [];
+        for (const item of items) {
+          const id = String(item.id || item.Id);
+          const name = item.properties?.Title || item.properties?.Name || item.name || item.Name || '';
           if (id === String(excludeId) || seen.has(id)) continue;
           seen.add(id);
           const confidence = scoreMatch(searchTerm, item);
@@ -356,7 +349,7 @@ async function searchRelatedAssets(pdfContent, token, excludeId, instance) {
         }
         found = true;
       } catch (err) {
-        console.log(`[Search] GET /api/entities?query= "${sanitized}": ${err.message}`);
+        console.log(`[Search] q="${sanitized}": ${err.message}`);
       }
     }
   }
@@ -533,7 +526,7 @@ app.post('/api/pdf/associate', async (req, res) => {
     }
 
     // Step 4: Search for related assets
-    const matches = await searchRelatedAssets(pdfContent, token, pdfAssetId, instance);
+    const matches = await searchRelatedAssets(pdfContent, token, pdfAssetId, instance, pdfFilename);
     console.log(`[Handler] Found ${matches.length} related assets`);
 
     // Step 5: Create relations
