@@ -285,16 +285,25 @@ async function searchRelatedAssets(pdfContent, token, excludeId, instance, pdfFi
   const matched = [];
   const seen = new Set();
 
-  // Extract PDF base name (e.g. "Bresol" from "Bresol.pdf") as the primary search term
+  // Extract PDF base name (e.g. "Bresol" from "Bresol.pdf" or "Bresol (1).pdf")
   const pdfBaseName = (pdfFilename || '')
+    .replace(/\.pdf$/i, '')
+    .replace(/\s*\(.*?\)\s*/g, '')  // strip (1), (2), etc.
+    .replace(/[\s_\-]+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+  // Also keep the full name without extension for searching
+  const pdfFullName = (pdfFilename || '')
     .replace(/\.pdf$/i, '')
     .replace(/[\s_\-]+/g, ' ')
     .trim()
     .toLowerCase();
 
-  // Build search terms: filename first (most important), then product numbers, then keywords
+  // Build search terms: filename variants first, then product numbers, then keywords
   const searchTerms = [];
   if (pdfBaseName) searchTerms.push(pdfBaseName);
+  if (pdfFullName && pdfFullName !== pdfBaseName) searchTerms.push(pdfFullName);
   searchTerms.push(...productNumbers.slice(0, 5));
   // Add keywords that are most likely to be product names (short, capitalized-looking)
   for (const kw of keywords) {
