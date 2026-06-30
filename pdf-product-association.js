@@ -401,34 +401,23 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
   for (const asset of matches) {
     let ok = false;
 
-    // Strategy 1 — Update relations on the MATCHED asset via entity PUT
-    // PUT /api/entities/{assetId} { "relations": { "RelationName": { "add": [relatedAssetId] } } }
+    // Strategy 1 — PUT /api/entities/{matchedAssetId} with relations
+    // Uses the entity update endpoint with relations block
+    const body = { relations: { [RELATION_TYPE]: { add: [assetId] } } };
     try {
-      await axios.put(
+      const resp = await axios.put(
         `https://${instance}/api/entities/${asset.id}`,
-        { relations: { [RELATION_TYPE]: { add: [assetId] } } },
-        { headers: chHeaders(token), timeout: 8000 }
+        body,
+        { headers: chHeaders(token), timeout: 8000, validateStatus: s => true }
       );
-      console.log(`[Relation] ✅ #${asset.id} ← #${assetId} via entity PUT relations`);
-      ok = true;
-    } catch (err1) {
-      console.log(`[Relation] entity PUT relations for #${asset.id}: ${err1.response?.status || err1.message}`);
-    }
-
-    // Strategy 2 — Dedicated relations endpoint
-    // PUT /api/entities/{assetId}/relations/{RelationDefinitionName} { "add": [relatedAssetId] }
-    if (!ok) {
-      try {
-        await axios.put(
-          `https://${instance}/api/entities/${asset.id}/relations/${RELATION_TYPE}`,
-          { add: [assetId] },
-          { headers: chHeaders(token), timeout: 8000 }
-        );
-        console.log(`[Relation] ✅ #${asset.id} ← #${assetId} via PUT relations/${RELATION_TYPE}`);
+      if (resp.status === 200) {
+        console.log(`[Relation] ✅ #${asset.id} ← #${assetId} via PUT entity`);
         ok = true;
-      } catch (err2) {
-        console.log(`[Relation] PUT relations/${RELATION_TYPE} for #${asset.id}: ${err2.response?.status || err2.message}`);
+      } else {
+        console.log(`[Relation] PUT entity #${asset.id}: status=${resp.status}, body=${JSON.stringify(resp.data).substring(0, 300)}`);
       }
+    } catch (err) {
+      console.log(`[Relation] PUT entity #${asset.id}: ${err.response?.status || err.message} — ${JSON.stringify(err.response?.data || '').substring(0, 200)}`);
     }
 
     if (!ok) {
