@@ -410,9 +410,9 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
       { headers: chHeaders(token), timeout: 10000 }
     );
     const pdfEntity = getRes.data;
-    const entityDef = typeof pdfEntity.entitydefinition === 'object'
-      ? (pdfEntity.entitydefinition?.Name || 'M.Asset')
-      : (pdfEntity.entitydefinition || 'M.Asset');
+    // Use entitydefinition as-is from the GET response (Content Hub expects the
+    // full object format: { href: "...", title: "..." }, not a plain string)
+    const entityDef = pdfEntity.entitydefinition || 'M.Asset';
 
     // 2. Get existing RelatedAsset relations on the PDF
     const existingRelations = pdfEntity.relations || {};
@@ -504,9 +504,7 @@ async function updateAssetMetadata(assetId, metadata, token, instance) {
       current[key] = value;
     });
 
-    const entityDef = typeof entityRes.data.entitydefinition === 'object'
-      ? (entityRes.data.entitydefinition?.Name || 'M.Asset')
-      : (entityRes.data.entitydefinition || 'M.Asset');
+    const entityDef = entityRes.data.entitydefinition || 'M.Asset';
 
     await axios.put(
       `https://${instance}/api/entities/${assetId}`,
