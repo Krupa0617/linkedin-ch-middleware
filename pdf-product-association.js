@@ -18,7 +18,7 @@ app.use(express.json());
 const INSTANCE = process.env.CONTENT_HUB_INSTANCE || 'btr-q-001.sitecorecontenthub.cloud';
 const API_SECRET = process.env.CH_API_SECRET || process.env.API_SECRET_KEY || 'ch_secret_2027';
 const CONFIDENCE_MIN = parseFloat(process.env.ASSOCIATION_CONFIDENCE_THRESHOLD || '0.5');
-const RELATION_TYPE = process.env.PDF_RELATION_TYPE || 'RelatedAssets';
+const RELATION_TYPE = process.env.PDF_RELATION_TYPE || 'RelatedAsset';
 
 // Auth cache
 let authToken = null;
@@ -395,96 +395,45 @@ function scoreMatch(keyword, item) {
   return Math.min(score, 0.99);
 }
 
-// ==================== RELATIONS (via RelatedAssets property) ====================
+// ==================== RELATIONS ====================
 
 async function createRelatedAssetRelations(assetId, matches, token, instance) {
   for (const asset of matches) {
     let ok = false;
 
-    // Strategy 1 — Update the RelatedAssets property on the MATCHED asset to include the PDF asset
+    // Strategy 1 — Update relations on the MATCHED asset via entity PUT
+    // PUT /api/entities/{assetId} { "relations": { "RelationName": { "add": [relatedAssetId] } } }
     try {
-      const entityRes = await axios.get(
+      await axios.put(
         `https://${instance}/api/entities/${asset.id}`,
+        { relations: { [RELATION_TYPE]: { add: [assetId] } } },
         { headers: chHeaders(token), timeout: 8000 }
       );
+      console.log(`[Relation] ✅ #${asset.id} ← #${assetId} via entity PUT relations`);
+      ok = true;
+    } catch (err1) {
+      console.log(`[Relation] entity PUT relations for #${asset.id}: ${err1.response?.status || err1.message}`);
+    }
 
-      const currentProps = entityRes.data.properties || {};
-      const currentRelations = entityRes.data.relations || {};
-      const existing = currentProps['RelatedAssets'] || currentProps['Asset.RelatedAssets'] || [];
-
-      // Add the PDF asset ID if not already present
-      const relatedIds = Array.isArray(existing) ? [...existing] : [existing].filter(Boolean);
-      if (!relatedIds.includes(assetId)) {
-        relatedIds.push(assetId);
-      }
-
-      const updateProps = {
-        ...currentProps,
-        'RelatedAssets': relatedIds,
-        'Asset.RelatedAssets': relatedIds,
-      };
-
-      // Try PUT with properties + relations included
+    // Strategy 2 — Dedicated relations endpoint
+    // PUT /api/entities/{assetId}/relations/{RelationDefinitionName} { "add": [relatedAssetId] }
+    if (!ok) {
       try {
         await axios.put(
-          `https://${instance}/api/entities/${asset.id}`,
-          {
-            properties: updateProps,
-            relations: { ...currentRelations, 'RelatedAssets': relatedIds },
-          },
+          `https://${instance}/api/entities/${asset.id}/relations/${RELATION_TYPE}`,
+          { add: [assetId] },
           { headers: chHeaders(token), timeout: 8000 }
         );
-        console.log(`[Relation] ✅ #${asset.id} updated via PUT with relations (${relatedIds.length} items)`);
+        console.log(`[Relation] ✅ #${asset.id} ← #${assetId} via PUT relations/${RELATION_TYPE}`);
         ok = true;
-      } catch (putErr) {
-        // Try PATCH on properties only
-        try {
-          await axios.patch(
-            `https://${instance}/api/entities/${asset.id}`,
-            { properties: { 'RelatedAssets': relatedIds, 'Asset.RelatedAssets': relatedIds } },
-            { headers: chHeaders(token), timeout: 8000 }
-          );
-          console.log(`[Relation] ✅ #${asset.id} updated via PATCH`);
-          ok = true;
-        } catch (patchErr) {
-          console.log(`[Relation] PUT/PATCH on #${asset.id}: PUT ${putErr.response?.status || putErr.message}, PATCH ${patchErr.response?.status || patchErr.message}`);
-        }
+      } catch (err2) {
+        console.log(`[Relation] PUT relations/${RELATION_TYPE} for #${asset.id}: ${err2.response?.status || err2.message}`);
       }
-    } catch (err) {
-      console.log(`[Relation] Read entity #${asset.id}: ${err.message}`);
     }
 
-    // Strategy 2 — v2 relations endpoint
     if (!ok) {
-      try {
-        await axios.post(
-          `https://${instance}/api/relations`,
-          { relationType: RELATION_TYPE, source: String(assetId), target: String(asset.id), sourceType: 'M.Asset', targetType: 'M.Asset' },
-          { headers: chHeaders(token), timeout: 10000 },
-        );
-        ok = true;
-      } catch (err) {
-        console.log(`[Relation] POST /api/relations: ${err.message}`);
-      }
+      console.log(`[Relation] ⚠️ Failed: #${assetId} → #${asset.id} (${asset.name})`);
     }
-
-    // Strategy 3 — entity relations endpoint
-    if (!ok) {
-      try {
-        await axios.post(
-          `https://${instance}/api/entities/${assetId}/relations`,
-          { relationType: RELATION_TYPE, relatedEntityId: String(asset.id), targetEntityType: 'M.Asset' },
-          { headers: chHeaders(token), timeout: 10000 },
-        );
-        ok = true;
-      } catch (err) {
-        console.log(`[Relation] POST /api/entities/${assetId}/relations: ${err.message}`);
-      }
-    }
-
-    console.log(ok
-      ? `[Relation] ✅ #${assetId} → #${asset.id} (${asset.name})`
-      : `[Relation] ⚠️ Failed: #${assetId} → #${asset.id}`);
   }
 }
 
