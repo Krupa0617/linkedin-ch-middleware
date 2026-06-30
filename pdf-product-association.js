@@ -460,7 +460,7 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
       { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
     );
 
-    console.log(`[Relation] PUT response: status=${putRes.status}, data=${JSON.stringify(putRes.data || '').substring(0, 300)}`);
+    console.log(`[Relation] PUT response: status=${putRes.status}, statusText="${putRes.statusText}", headers=${JSON.stringify(putRes.headers?.['content-type'] || putRes.headers || 'none')}, data=${JSON.stringify(putRes.data || '').substring(0, 500)}, dataLength=${JSON.stringify(putRes.data || '').length}`);
 
     if (putRes.status === 200 || putRes.status === 204) {
       console.log(`[Relation] ✅ #${assetId} ← ${added.length} product(s): ${added.map(a => `#${a.id} (${a.name})`).join(', ')}`);
@@ -473,7 +473,7 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
         { [odataRelName]: relatedAssets.map(r => `/api/entities/${r.id}`) },
         { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
       );
-      console.log(`[Relation] PATCH response: status=${patchRes.status}, data=${JSON.stringify(patchRes.data || '').substring(0, 300)}`);
+      console.log(`[Relation] PATCH response: status=${patchRes.status}, statusText="${patchRes.statusText}", headers=${JSON.stringify(patchRes.headers?.['content-type'] || patchRes.headers || 'none')}, data=${JSON.stringify(patchRes.data || '').substring(0, 500)}, dataLength=${JSON.stringify(patchRes.data || '').length}`);
       if (patchRes.status === 200 || patchRes.status === 204) {
         console.log(`[Relation] ✅ #${assetId} ← ${added.length} product(s) via PATCH @odata.bind`);
       } else {
@@ -484,7 +484,13 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
     }
   } catch (err) {
     console.log(`[Relation] ❌ Error: ${err.message}`);
-    if (err.response?.data) console.log(`[Relation] Response: ${JSON.stringify(err.response.data).substring(0, 300)}`);
+    if (err.response) {
+      console.log(`[Relation] Error details: status=${err.response.status}, statusText="${err.response.statusText}", headers=${JSON.stringify(err.response.headers || {})}, data=${JSON.stringify(err.response.data || '').substring(0, 500)}`);
+    } else if (err.request) {
+      console.log(`[Relation] Error: no response received, request=${JSON.stringify({ method: err.request.method, path: err.request.path })}`);
+    } else {
+      console.log(`[Relation] Error: ${err.stack || err.message}`);
+    }
   }
 }
 
