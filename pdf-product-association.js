@@ -487,35 +487,30 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
     );
     console.log(`[Relation] PUT response: status=${putRes.status}, statusText="${putRes.statusText}", data=${JSON.stringify(putRes.data || '').substring(0, 500)}`);
 
-    // ── Verify: re-GET and check if relation was actually saved ──
-    console.log(`[Relation] Verifying by re-fetching entity #${assetId}...`);
+    // ── Strategy 3: PUT to relation endpoint directly ──
+    // Verified: GET /api/entities/{id}/relations/RelatedAsset returns 200
+    // with {"parents":[...], "inherits_security":true, "self":{...}}
+    const relationHref = `https://${instance}/api/entities/${assetId}/relations/${RELATION_TYPE}`;
+    console.log(`[Relation] Trying PUT to relation endpoint: ${relationHref}...`);
+    const relPayload = { children: added.map(a => ({ id: Number(a.id) })) };
+    console.log(`[Relation] PUT relation body: ${JSON.stringify(relPayload)}`);
+    const relRes = await axios.put(
+      relationHref,
+      relPayload,
+      { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
+    );
+    console.log(`[Relation] PUT relation response: status=${relRes.status}, statusText="${relRes.statusText}", data=${JSON.stringify(relRes.data || '').substring(0, 500)}`);
+
+    // ── Verify by re-fetching relation endpoint ──
+    console.log(`[Relation] Verifying by re-fetching relation endpoint...`);
     try {
-      const verifyRes = await axios.get(
-        `https://${instance}/api/entities/${assetId}`,
-        { headers: chHeaders(token), timeout: 10000 }
+      const relVerifyRes = await axios.get(
+        relationHref,
+        { headers: chHeaders(token), timeout: 10000, validateStatus: s => true }
       );
-      const updatedRelations = verifyRes.data?.relations?.[RELATION_TYPE] || [];
-      console.log(`[Relation] Verify: ${RELATION_TYPE} on #${assetId} = ${JSON.stringify(updatedRelations).substring(0, 500)}`);
-      if (Array.isArray(updatedRelations)) {
-        const found = updatedRelations.filter(r => added.some(a => Number(r.id) === Number(a.id)));
-        console.log(`[Relation] Verify: ${found.length}/${added.length} product(s) found in relation`);
-      } else {
-        console.log(`[Relation] Verify: ${RELATION_TYPE} is not an array: ${typeof updatedRelations} → value=${JSON.stringify(updatedRelations).substring(0, 300)}`);
-        // Also try fetching the relation endpoint directly
-        if (updatedRelations?.href) {
-          try {
-            const relEndpointRes = await axios.get(
-              updatedRelations.href,
-              { headers: chHeaders(token), timeout: 10000, validateStatus: s => true }
-            );
-            console.log(`[Relation] Verify via relation endpoint: status=${relEndpointRes.status}, data=${JSON.stringify(relEndpointRes.data || '').substring(0, 500)}`);
-          } catch (relEpErr) {
-            console.log(`[Relation] Verify via relation endpoint failed: ${relEpErr.message}`);
-          }
-        }
-      }
+      console.log(`[Relation] Verify relation endpoint: status=${relVerifyRes.status}, data=${JSON.stringify(relVerifyRes.data || '').substring(0, 800)}`);
     } catch (verifyErr) {
-      console.log(`[Relation] Verify GET failed: ${verifyErr.message}`);
+      console.log(`[Relation] Verify failed: ${verifyErr.message}`);
     }
   } catch (err) {
     console.log(`[Relation] ❌ Error: ${err.message}`);
