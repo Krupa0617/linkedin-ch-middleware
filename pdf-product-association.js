@@ -113,7 +113,6 @@ async function downloadPDF(assetId, token, instance) {
   const renditions = asset?.renditions || asset?.Renditions;
   if (renditions?.download?.[0]?.href) urlsToTry.push(renditions.download[0].href);
   if (renditions?.original?.[0]?.href) urlsToTry.push(renditions.original[0].href);
-  // Some Content Hub versions nest under 'items'
   if (renditions?.items) {
     for (const item of renditions.items) {
       if (item.href) urlsToTry.push(item.href);
@@ -134,29 +133,47 @@ async function downloadPDF(assetId, token, instance) {
     }
   }
 
-  // Strategy 4 — try renditions API
+  // Strategy 4 — try renditions API to get download URLs, then fetch the file
   urlsToTry.push(`https://${instance}/api/entities/${assetId}/renditions`);
-
-  // Strategy 5 — common Content Hub download endpoints
-  urlsToTry.push(
-    `https://${instance}/api/entities/${assetId}/file`,
-    `https://${instance}/api/entities/${assetId}/download`,
-  );
+  urlsToTry.push(`https://${instance}/api/entities/${assetId}/file`);
+  urlsToTry.push(`https://${instance}/api/entities/${assetId}/download`);
 
   console.log('[Download] Trying URLs:', urlsToTry);
 
   for (const downloadUrl of urlsToTry) {
     try {
       const fileRes = await axios.get(downloadUrl, {
-        responseType: 'arraybuffer',
+        responseType: downloadUrl.includes('/renditions') ? 'json' : 'arraybuffer',
         headers: chHeaders(token),
         timeout: 30000,
         validateStatus: s => (s >= 200 && s < 300) || s === 404,
       });
 
       if (fileRes.status === 200) {
-        console.log('[Download] Success from:', downloadUrl);
-        return Buffer.from(fileRes.data);
+        // If this was the renditions endpoint, parse the response for actual download URLs
+        if (downloadUrl.includes('/renditions')) {
+          console.log('[Download] Renditions response received, parsing for download URLs...');
+          const renditionUrls = extractDownloadUrlsFromRenditions(fileRes.data, instance, assetId, token);
+          if (renditionUrls.length > 0) {
+            for (const renditionUrl of renditionUrls) {
+              console.log('[Download] Trying rendition download URL:', renditionUrl);
+              try {
+                const pdfRes = await axios.get(renditionUrl, {
+                  responseType: 'arraybuffer',
+                  headers: chHeaders(token),
+                  timeout: 60000,
+                });
+                console.log('[Download] Success from rendition:', renditionUrl);
+                return Buffer.from(pdfRes.data);
+              } catch (rendErr) {
+                console.log(`[Download] Rendition URL failed: ${renditionUrl} — ${rendErr.message}`);
+              }
+            }
+          }
+        } else {
+          console.log('[Download] Success from:', downloadUrl);
+          return Buffer.from(fileRes.data);
+        }
       }
     } catch (err) {
       console.log(`[Download] Failed: ${downloadUrl} — ${err.message}`);
@@ -164,6 +181,54 @@ async function downloadPDF(assetId, token, instance) {
   }
 
   throw new Error(`File not found for asset #${assetId} — all download URLs exhausted`);
+}
+
+// ==================== RENDITIONS PARSING ====================
+
+/** Parse Content Hub renditions API response and extract downloadable file URLs */
+function extractDownloadUrlsFromRenditions(renditionsData, instance, assetId) {
+  const urls = [];
+
+  // Renditions can come in different shapes depending on CH version
+  const data = renditionsData?.data || renditionsData || {};
+  const items = data.items || data.results || data.renditions || data;
+
+  const list = Array.isArray(items) ? items : Object.values(items);
+
+  for (const item of list) {
+    if (!item) continue;
+
+    // Direct href
+    if (typeof item.href === 'string' && item.href.startsWith('http')) {
+      urls.push(item.href);
+    }
+    // Nested download link
+    if (item.download?.href) {
+      urls.push(item.download.href);
+    }
+    // FileUrl or Url property
+    if (typeof item.FileUrl === 'string') urls.push(item.FileUrl);
+    if (typeof item.Url === 'string' && item.Url.startsWith('http')) urls.push(item.Url);
+  }
+
+  // If we got nothing structured, check for a delivery-style URL in the raw response
+  if (urls.length === 0) {
+    const raw = JSON.stringify(renditionsData);
+    const match = raw.match(/"https?:[^"]*\/api\/delivery\/[^"]+"/);
+    if (match) {
+      urls.push(JSON.parse(match[0]));
+    }
+  }
+
+  // Prefer downloadOriginal or largest rendition first
+  urls.sort((a, b) => {
+    const aScore = a.includes('downloadOriginal') ? 2 : a.includes('download') ? 1 : 0;
+    const bScore = b.includes('downloadOriginal') ? 2 : b.includes('download') ? 1 : 0;
+    return bScore - aScore;
+  });
+
+  console.log('[Renditions] Extracted URLs:', urls);
+  return urls;
 }
 
 // ==================== PDF PARSING (pdf-text-extract - Node.js native) ====================
