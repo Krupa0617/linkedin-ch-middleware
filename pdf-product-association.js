@@ -526,7 +526,8 @@ async function createRelatedAssetRelations(pdfAssetId, matches, token, instance)
     } catch (e5) { console.log(`[Relation] S5 error: ${e5.message}`); }
 
     // ── Strategy 6: PUT to product relations endpoint with parents format ──
-    console.log(`[Relation] Strategy 6 — PUT product relation with parents...`);
+    console.log(`[Relation] Strategy 6 — PUT product relation with parents (href)...`);
+    const pdfHref = `https://${instance}/api/entities/${pdfAssetId}`;
     for (const asset of matches) {
       try {
         const s6Res = await axios.put(
