@@ -399,105 +399,87 @@ function scoreMatch(keyword, item) {
 
 async function createRelatedAssetRelations(assetId, matches, token, instance) {
   for (const asset of matches) {
-    let ok = false;
-
-    // ── DEBUG: Fetch full entity to inspect fields ──
+    // ── Strategy: GET entity → merge relation into existing relations → PUT back ──
+    // This mirrors the successful updateAssetMetadata pattern (GET+merge+PUT)
     try {
-      const d = (await axios.get(`https://${instance}/api/entities/${asset.id}`, { headers: chHeaders(token), timeout: 10000 })).data;
-      const defName = typeof d.entitydefinition === 'object' ? (d.entitydefinition?.Name || d.entitydefinition?.name || JSON.stringify(d.entitydefinition)) : d.entitydefinition;
-      console.log(`[Debug #${asset.id}] entitydefinition="${defName}", is_root_taxonomy=${d.is_root_taxonomy_item}, is_path_root=${d.is_path_root}`);
-      console.log(`[Debug #${asset.id}] properties keys=${Object.keys(d.properties||{}).join(', ')}, Title="${d.properties?.Title}", Name="${d.properties?.Name}"`);
-      console.log(`[Debug #${asset.id}] lifecycle=${JSON.stringify(d.lifecycle||d.Lifecycle||'N/A').substring(0,200)}`);
-    } catch (e) { console.log(`[Debug #${asset.id}] Fetch failed: ${e.message}`); }
-
-    // ── Use dedicated relations endpoint first (most reliable for Content Hub) ──
-    // PATCH /api/entities/{matchedAssetId}/relations/RelatedAsset
-    // Body: { "add": [{ "id": pdfAssetId }] }
-    const relationHref = `https://${instance}/api/entities/${asset.id}/relations/${RELATION_TYPE}`;
-    try {
-      const resp = await axios.patch(
-        relationHref,
-        { add: [{ id: Number(assetId) }] },
-        { headers: chHeaders(token), timeout: 8000, validateStatus: s => true }
+      // 1. GET current entity state
+      const getRes = await axios.get(
+        `https://${instance}/api/entities/${asset.id}`,
+        { headers: chHeaders(token), timeout: 10000 }
       );
-      console.log(`[Relation] Relations endpoint response for #${asset.id}: status=${resp.status}, data=${JSON.stringify(resp.data || '').substring(0, 300)}`);
-      if (resp.status === 200) {
-        console.log(`[Relation] ✅ #${asset.id} ← #${assetId} via PATCH relations endpoint`);
-        ok = true;
+      const entity = getRes.data;
+      const entityDef = typeof entity.entitydefinition === 'object'
+        ? (entity.entitydefinition?.Name || 'M.Asset')
+        : (entity.entitydefinition || 'M.Asset');
+
+      // 2. Merge the new PDF relation into existing relations
+      // Content Hub uses OData-style navigation properties:
+      // "RelatedAsset": [{ "id": targetId }]
+      const existingRelations = entity.relations || {};
+      const existingRelated = existingRelations[RELATION_TYPE] || [];
+
+      // Check if already linked
+      const alreadyLinked = Array.isArray(existingRelated)
+        ? existingRelated.some(r => Number(r.id) === Number(assetId))
+        : false;
+
+      if (alreadyLinked) {
+        console.log(`[Relation] ✅ Already linked: #${asset.id} already has #${assetId} in ${RELATION_TYPE}`);
+        continue;
       }
-    } catch (relErr) {
-      console.log(`[Relation] Relations endpoint error for #${asset.id}: ${relErr.message}`);
-    }
 
-    if (!ok) {
-      // Strategy 1 — PUT /api/entities/{matchedAssetId} with relations (href format)
-      // { "RelatedAsset": { "add": [{ "href": "https://..." }] } }
-      const entityDef = typeof asset.entitydefinition === 'object' && asset.entitydefinition?.Name
-        ? asset.entitydefinition.Name
-        : (asset.entitydefinition || 'M.Asset');
-      const entityHref = `https://${instance}/api/entities/${assetId}`;
-      const body = { entitydefinition: entityDef, relations: { [RELATION_TYPE]: { add: [{ href: entityHref }] } } };
-      console.log(`[Relation] Strategy 1 body for #${asset.id}: ${JSON.stringify(body)}`);
-      try {
-        const resp = await axios.put(
-          `https://${instance}/api/entities/${asset.id}`,
-          body,
-          { headers: chHeaders(token), timeout: 8000, validateStatus: s => true }
-        );
-        console.log(`[Relation] Strategy 1 response for #${asset.id}: status=${resp.status}, data=${JSON.stringify(resp.data || '').substring(0, 300)}`);
-        if (resp.status === 200) {
-          console.log(`[Relation] ✅ #${asset.id} ← #${assetId} via PUT entity (href format)`);
-          ok = true;
-        }
-      } catch (err) {
-        console.log(`[Relation] PUT entity #${asset.id}: ${err.response?.status || err.message} — ${JSON.stringify(err.response?.data || '').substring(0, 200)}`);
+      // Build new relations — merge existing RelatedAsset items + new one
+      const targetId = Number(assetId);
+      if (Array.isArray(existingRelated)) {
+        existingRelated.push({ id: targetId });
+      } else if (typeof existingRelated === 'object' && existingRelated.href) {
+        // Navigation property without items yet — replace with array
+        existingRelations[RELATION_TYPE] = [{ id: targetId }];
+      } else {
+        existingRelations[RELATION_TYPE] = [{ id: targetId }];
       }
-    }
 
-    if (!ok) {
-      // Strategy 2 — child format: { "RelatedAsset": { "child": [{ "id": assetId }] } }
-      const entityDef = typeof asset.entitydefinition === 'object' && asset.entitydefinition?.Name
-        ? asset.entitydefinition.Name
-        : (asset.entitydefinition || 'M.Asset');
-      const body2 = { entitydefinition: entityDef, relations: { [RELATION_TYPE]: { child: [{ id: assetId }] } } };
-      console.log(`[Relation] Strategy 2 body for #${asset.id}: ${JSON.stringify(body2)}`);
-      try {
-        const resp = await axios.put(
+      // 3. PUT back — send entitydefinition + existing properties + merged relations
+      const putBody = {
+        entitydefinition: entityDef,
+        properties: entity.properties || {},
+        relations: existingRelations,
+      };
+      console.log(`[Relation] PUT body for #${asset.id}: ${JSON.stringify({ ...putBody, properties: '...(preserved)' }).substring(0, 600)}`);
+
+      const putRes = await axios.put(
+        `https://${instance}/api/entities/${asset.id}`,
+        putBody,
+        { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
+      );
+
+      console.log(`[Relation] PUT response for #${asset.id}: status=${putRes.status}, data=${JSON.stringify(putRes.data || '').substring(0, 300)}`);
+
+      if (putRes.status === 200) {
+        console.log(`[Relation] ✅ #${asset.id} ← #${assetId} via GET+PUT (merged relations)`);
+      } else if (putRes.status === 400) {
+        // 4. Fallback: try PATCH instead of PUT
+        console.log(`[Relation] PUT failed with 400, trying PATCH...`);
+        const patchBody = {
+          entitydefinition: entityDef,
+          relations: existingRelations,
+        };
+        const patchRes = await axios.patch(
           `https://${instance}/api/entities/${asset.id}`,
-          body2,
-          { headers: chHeaders(token), timeout: 8000, validateStatus: s => true }
+          patchBody,
+          { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
         );
-        console.log(`[Relation] Strategy 2 response for #${asset.id}: status=${resp.status}, data=${JSON.stringify(resp.data || '').substring(0, 300)}`);
-        if (resp.status === 200) {
-          console.log(`[Relation] ✅ #${asset.id} ← #${assetId} via PUT entity (child format)`);
-          ok = true;
+        console.log(`[Relation] PATCH response for #${asset.id}: status=${patchRes.status}, data=${JSON.stringify(patchRes.data || '').substring(0, 300)}`);
+        if (patchRes.status === 200) {
+          console.log(`[Relation] ✅ #${asset.id} ← #${assetId} via PATCH`);
+        } else {
+          console.log(`[Relation] ⚠️ Failed: #${assetId} → #${asset.id} (${asset.name})`);
         }
-      } catch (e2) { console.log(`[Relation] Strategy 2 error for #${asset.id}: ${e2.message}`); }
-    }
-
-    if (!ok) {
-      // Strategy 3 — id array: { "RelatedAsset": [{ "id": assetId }] }
-      const entityDef = typeof asset.entitydefinition === 'object' && asset.entitydefinition?.Name
-        ? asset.entitydefinition.Name
-        : (asset.entitydefinition || 'M.Asset');
-      const body3 = { entitydefinition: entityDef, relations: { [RELATION_TYPE]: [{ id: assetId }] } };
-      console.log(`[Relation] Strategy 3 body for #${asset.id}: ${JSON.stringify(body3)}`);
-      try {
-        const resp = await axios.put(
-          `https://${instance}/api/entities/${asset.id}`,
-          body3,
-          { headers: chHeaders(token), timeout: 8000, validateStatus: s => true }
-        );
-        console.log(`[Relation] Strategy 3 response for #${asset.id}: status=${resp.status}, data=${JSON.stringify(resp.data || '').substring(0, 300)}`);
-        if (resp.status === 200) {
-          console.log(`[Relation] ✅ #${asset.id} ← #${assetId} via PUT entity (id array format)`);
-          ok = true;
-        }
-      } catch (e3) { console.log(`[Relation] Strategy 3 error for #${asset.id}: ${e3.message}`); }
-    }
-
-    if (!ok) {
-      console.log(`[Relation] ⚠️ Failed: #${assetId} → #${asset.id} (${asset.name})`);
+      } else {
+        console.log(`[Relation] ⚠️ Failed: #${assetId} → #${asset.id} (${asset.name}) — unexpected status ${putRes.status}`);
+      }
+    } catch (err) {
+      console.log(`[Relation] ⚠️ Failed: #${assetId} → #${asset.id} (${asset.name}) — ${err.message}`);
     }
   }
 }
