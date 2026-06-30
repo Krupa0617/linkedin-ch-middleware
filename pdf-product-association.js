@@ -442,16 +442,15 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
       return;
     }
 
-    // 4. PUT the PDF asset — only send the target relation, not all existing ones.
-    // Content Hub's PUT is partial (same as updateAssetMetadata) — sending back
-    // system-managed relations (AssetTypeToAsset, FinalLifeCycleStatusToAsset, etc.)
-    // causes a 400 validation error.
+    // 4. PUT the PDF asset — use @odata.bind for the navigation property.
+    // Content Hub's OData API expects navigation property bindings at the
+    // entity level (e.g. "RelatedAsset@odata.bind") rather than inside a
+    // "relations" key, which is read-only metadata.
+    const odataRelName = `${RELATION_TYPE}@odata.bind`;
     const putBody = {
       entitydefinition: entityDef,
       properties: pdfEntity.properties || {},
-      relations: {
-        [RELATION_TYPE]: relatedAssets
-      },
+      [odataRelName]: relatedAssets.map(r => `/api/entities/${r.id}`),
     };
     console.log(`[Relation] PUT #${assetId} body: ${JSON.stringify({ ...putBody, properties: '...(preserved)' }).substring(0, 500)}`);
 
@@ -463,19 +462,20 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
 
     console.log(`[Relation] PUT response: status=${putRes.status}, data=${JSON.stringify(putRes.data || '').substring(0, 300)}`);
 
-    if (putRes.status === 200) {
+    if (putRes.status === 200 || putRes.status === 204) {
       console.log(`[Relation] ✅ #${assetId} ← ${added.length} product(s): ${added.map(a => `#${a.id} (${a.name})`).join(', ')}`);
     } else if (putRes.status === 400) {
-      // Fallback: try PATCH with just entitydefinition + relations
-      console.log(`[Relation] PUT 400, trying PATCH fallback...`);
+      // Fallback: try with @odata.bind without properties (PATCH)
+      console.log(`[Relation] PUT 400, trying PATCH with @odata.bind...`);
+      const odataRelName = `${RELATION_TYPE}@odata.bind`;
       const patchRes = await axios.patch(
         `https://${instance}/api/entities/${assetId}`,
-        { entitydefinition: entityDef, relations: { [RELATION_TYPE]: relatedAssets } },
+        { [odataRelName]: relatedAssets.map(r => `/api/entities/${r.id}`) },
         { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
       );
       console.log(`[Relation] PATCH response: status=${patchRes.status}, data=${JSON.stringify(patchRes.data || '').substring(0, 300)}`);
-      if (patchRes.status === 200) {
-        console.log(`[Relation] ✅ #${assetId} ← ${added.length} product(s) via PATCH`);
+      if (patchRes.status === 200 || patchRes.status === 204) {
+        console.log(`[Relation] ✅ #${assetId} ← ${added.length} product(s) via PATCH @odata.bind`);
       } else {
         console.log(`[Relation] ⚠️ Failed: PUT ${putRes.status} / PATCH ${patchRes.status}`);
       }
