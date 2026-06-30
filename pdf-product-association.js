@@ -23,6 +23,7 @@ const RELATION_TYPE = process.env.PDF_RELATION_TYPE || 'RelatedAssets';
 // Auth cache
 let authToken = null;
 let authTime = 0;
+let authType = null; // 'bearer' (OAuth) or 'token' (username/password)
 const AUTH_TTL = 55 * 60 * 1000; // 55 min
 
 // ── Common stop words ──
@@ -56,6 +57,7 @@ async function getAuthToken(instance) {
     console.log('[Auth] Got OAuth token');
     authToken = response.data.access_token;
     authTime = now;
+    authType = 'bearer';
     return authToken;
   } catch (oauthError) {
     console.warn('[Auth] OAuth failed, trying username/password:', oauthError.message);
@@ -71,17 +73,20 @@ async function getAuthToken(instance) {
     console.log('[Auth] Got username/password token');
     authToken = response.data.token;
     authTime = now;
+    authType = 'token';
     return authToken;
   }
 }
 
 /** Auth headers for Content Hub API calls */
 function chHeaders(token) {
-  return {
-    'X-Auth-Token': token,
-    'Authorization': `Bearer ${token}`,
-    'Content-Type': 'application/json',
-  };
+  const headers = { 'Content-Type': 'application/json' };
+  if (authType === 'bearer') {
+    headers['Authorization'] = `Bearer ${token}`;
+  } else {
+    headers['X-Auth-Token'] = token;
+  }
+  return headers;
 }
 
 // ==================== PDF DOWNLOAD ====================
