@@ -1,4 +1,7 @@
 import { createRequire } from 'module';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import axios from 'axios';
 import express from 'express';
 
@@ -234,10 +237,20 @@ function extractDownloadUrlsFromRenditions(renditionsData, instance, assetId) {
 // ==================== PDF PARSING (pdf-text-extract - Node.js native) ====================
 
 async function extractPDFContent(pdfBuffer) {
+  const tmpFile = path.join(os.tmpdir(), `pdf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`);
+  try {
+    fs.writeFileSync(tmpFile, pdfBuffer);
+    console.log(`[PDF] Saved temp file: ${tmpFile}`);
+  } catch (writeErr) {
+    throw new Error(`Failed to write PDF temp file: ${writeErr.message}`);
+  }
+
   return new Promise((resolve, reject) => {
     try {
-      // pdf-text-extract works with buffer directly
-      extractText(pdfBuffer, (err, pages) => {
+      extractText(tmpFile, (err, pages) => {
+        // Clean up temp file
+        try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+
         if (err) {
           console.error('[PDF] Error extracting:', err.message);
           return reject(new Error(`PDF extraction failed: ${err.message}`));
@@ -281,6 +294,8 @@ async function extractPDFContent(pdfBuffer) {
         });
       });
     } catch (err) {
+      // Clean up on unexpected error too
+      try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
       console.error('[PDF] Error:', err.message);
       reject(new Error(`PDF extraction failed: ${err.message}`));
     }
