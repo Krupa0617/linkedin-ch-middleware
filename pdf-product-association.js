@@ -101,27 +101,52 @@ async function downloadPDF(assetId, token, instance) {
   );
 
   const asset = assetRes.data;
-  const renditions = asset?.renditions;
-  let downloadUrl = null;
 
+  // Collect all possible download URLs from renditions / blob / entity structure
+  const urlsToTry = [];
+
+  // Strategy 1 — renditions from entity response
+  const renditions = asset?.renditions;
   if (renditions?.download?.[0]?.href) {
-    downloadUrl = renditions.download[0].href;
-  } else if (renditions?.original?.[0]?.href) {
-    downloadUrl = renditions.original[0].href;
-  } else {
-    downloadUrl = `https://${instance}/api/entities/${assetId}/file`;
+    urlsToTry.push(renditions.download[0].href);
+  }
+  if (renditions?.original?.[0]?.href) {
+    urlsToTry.push(renditions.original[0].href);
   }
 
-  console.log('[Download] Downloading from:', downloadUrl);
-  const fileRes = await axios.get(downloadUrl, {
-    responseType: 'arraybuffer',
-    headers: chHeaders(token),
-    timeout: 30000,
-    validateStatus: s => (s >= 200 && s < 300) || s === 404,
-  });
+  // Strategy 2 — Blob property from entity
+  const blobId = asset?.properties?.Blob || asset?.Blob;
+  if (blobId) {
+    urlsToTry.push(`https://${instance}/api/blobs/${blobId}/download`);
+  }
 
-  if (fileRes.status === 404) throw new Error(`File not found for asset #${assetId}`);
-  return Buffer.from(fileRes.data);
+  // Strategy 3 — common Content Hub download endpoints
+  urlsToTry.push(
+    `https://${instance}/api/entities/${assetId}/file`,
+    `https://${instance}/api/entities/${assetId}/download`,
+  );
+
+  console.log('[Download] Trying URLs:', urlsToTry);
+
+  for (const downloadUrl of urlsToTry) {
+    try {
+      const fileRes = await axios.get(downloadUrl, {
+        responseType: 'arraybuffer',
+        headers: chHeaders(token),
+        timeout: 30000,
+        validateStatus: s => (s >= 200 && s < 300) || s === 404,
+      });
+
+      if (fileRes.status === 200) {
+        console.log('[Download] Success from:', downloadUrl);
+        return Buffer.from(fileRes.data);
+      }
+    } catch (err) {
+      console.log(`[Download] Failed: ${downloadUrl} — ${err.message}`);
+    }
+  }
+
+  throw new Error(`File not found for asset #${assetId} — all download URLs exhausted`);
 }
 
 // ==================== PDF PARSING (pdf-text-extract - Node.js native) ====================
