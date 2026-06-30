@@ -1,13 +1,13 @@
-import { createRequire } from 'module';
+import * as pdfjsLib from 'pdfjs-dist';
 import axios from 'axios';
 import express from 'express';
 
-const require = createRequire(import.meta.url);
-const PDFParse = require('pdf-parse');
+// Set up pdf.js worker (uses CDN version)
+pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
 const app = express();
 app.use(express.json());
-// ... rest of code stays the same
+
 // ═══════════════════════════════════════════════════
 // PDF → Related Assets Association
 // When a PDF is uploaded to Content Hub as an Asset,
@@ -119,59 +119,61 @@ async function downloadPDF(assetId, token, instance) {
   return Buffer.from(fileRes.data);
 }
 
-// ==================== PDF PARSING (pdf-parse v3) ====================
+// ==================== PDF PARSING (pdfjs-dist) ====================
 
 async function extractPDFContent(pdfBuffer) {
- // At the top:
-let PDFParse;
+  try {
+    const pdf = await pdfjsLib.getDocument({ data: pdfBuffer }).promise;
+    
+    let fullText = '';
+    for (let i = 1; i <= pdf.numPages; i++) {
+      try {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items.map(item => item.str || '').join(' ');
+        fullText += ' ' + pageText;
+      } catch (pageErr) {
+        console.warn(`[PDF] Warning extracting page ${i}:`, pageErr.message);
+      }
+    }
 
-// In your handler, before using it:
-async function initPDFParse() {
-  if (!PDFParse) {
-    const module = await import('pdf-parse');
-    PDFParse = module.default;
+    const text = fullText.substring(0, 3000).trim();
+
+    // Extract product numbers (HIM-XXXX format)
+    const productNumberRegex = /[A-Z]{2,4}-\d{3,6}/g;
+    const foundProductNumbers = text.match(productNumberRegex) || [];
+
+    // Extract keywords by frequency
+    const rawWords = text
+      .toLowerCase()
+      .split(/[\s\n\r,\.\;:!?()"'\-\–—/\\|@#$%^&*+=<>[\]{}~`]+/)
+      .filter(w => w.length >= 4 && w.length <= 50)
+      .filter(w => !/^\d[\d\-_\s]*$/.test(w))
+      .filter(w => !STOP_WORDS.has(w));
+
+    const freq = {};
+    rawWords.forEach(w => { freq[w] = (freq[w] || 0) + 1; });
+    const keywords = [...new Set(rawWords)]
+      .sort((a, b) => (freq[b] - freq[a]) || a.localeCompare(b))
+      .slice(0, 25);
+
+    console.log(`[PDF] Extracted ${text.length} chars, ${keywords.length} keywords from ${pdf.numPages} pages`);
+
+    return {
+      text,
+      pages: pdf.numPages,
+      productNumbers: [...new Set(foundProductNumbers)],
+      keywords,
+      metadata: {
+        title: pdf.documentInfo?.Title || '',
+        author: pdf.documentInfo?.Author || '',
+        subject: pdf.documentInfo?.Subject || '',
+      },
+    };
+  } catch (err) {
+    console.error('[PDF] Error extracting content:', err.message);
+    throw new Error(`PDF extraction failed: ${err.message}`);
   }
-  return PDFParse;
-}
-
-// In the main handler, after auth:
-await initPDFParse();
-const pdfContent = await extractPDFContent(pdfBuffer);
-
-  const fullText = textResult?.text || '';
-  const text = fullText.substring(0, 3000);
-
-  // Extract product numbers (HIM-XXXX format)
-  const productNumberRegex = /[A-Z]{2,4}-\d{3,6}/g;
-  const foundProductNumbers = text.match(productNumberRegex) || [];
-
-  // Extract keywords by frequency
-  const rawWords = text
-    .toLowerCase()
-    .split(/[\s\n\r,\.\;:!?()"'\-\–—/\\|@#$%^&*+=<>[\]{}~`]+/)
-    .filter(w => w.length >= 4 && w.length <= 50)
-    .filter(w => !/^\d[\d\-_\s]*$/.test(w))
-    .filter(w => !STOP_WORDS.has(w));
-
-  const freq = {};
-  rawWords.forEach(w => { freq[w] = (freq[w] || 0) + 1; });
-  const keywords = [...new Set(rawWords)]
-    .sort((a, b) => (freq[b] - freq[a]) || a.localeCompare(b))
-    .slice(0, 25);
-
-  console.log(`[PDF] Extracted ${text.length} chars, ${keywords.length} keywords`);
-
-  return {
-    text,
-    pages: textResult?.total || 0,
-    productNumbers: [...new Set(foundProductNumbers)],
-    keywords,
-    metadata: {
-      title: infoResult?.info?.Title || '',
-      author: infoResult?.info?.Author || '',
-      subject: infoResult?.info?.Subject || '',
-    },
-  };
 }
 
 // ==================== SEARCH RELATED ASSETS ====================
