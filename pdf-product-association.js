@@ -401,6 +401,14 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
   for (const asset of matches) {
     let ok = false;
 
+    // ── DEBUG: Fetch full entity to inspect fields ──
+    try {
+      const d = (await axios.get(`https://${instance}/api/entities/${asset.id}`, { headers: chHeaders(token), timeout: 10000 })).data;
+      console.log(`[Debug #${asset.id}] entitydefinition=${d.entitydefinition}, relations=${JSON.stringify(d.relations || d.Relations || {}).substring(0,600)}`);
+      console.log(`[Debug #${asset.id}] properties keys=${Object.keys(d.properties||{}).join(', ')}, Title="${d.properties?.Title}", Name="${d.properties?.Name}"`);
+      console.log(`[Debug #${asset.id}] lifecycle=${JSON.stringify(d.lifecycle||d.Lifecycle||'N/A').substring(0,200)}`);
+    } catch (e) { console.log(`[Debug #${asset.id}] Fetch failed: ${e.message}`); }
+
     // Strategy 1 — PUT /api/entities/{matchedAssetId} with relations (href format)
     // { "RelatedAsset": { "add": [{ "href": "https://..." }] } }
     const entityDef = asset.entitydefinition || 'M.Asset';
