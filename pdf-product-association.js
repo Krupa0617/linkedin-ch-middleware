@@ -90,7 +90,7 @@ async function downloadPDF(assetId, token, instance) {
   const assetRes = await axios.get(
     `https://${instance}/api/entities/${assetId}`,
     {
-      headers: { 'Authorization': `Bearer ${token}` },
+      headers: chHeaders(token),
       timeout: 10000
     }
   );
@@ -110,7 +110,7 @@ async function downloadPDF(assetId, token, instance) {
   console.log('[Download] Downloading from:', downloadUrl);
   const fileRes = await axios.get(downloadUrl, {
     responseType: 'arraybuffer',
-    headers: { 'Authorization': `Bearer ${token}` },
+    headers: chHeaders(token),
     timeout: 30000,
     validateStatus: s => (s >= 200 && s < 300) || s === 404,
   });
@@ -300,7 +300,7 @@ async function updateAssetMetadata(assetId, metadata, token, instance) {
   try {
     const entityRes = await axios.get(
       `https://${instance}/api/entities/${assetId}`,
-      { headers: { 'Authorization': `Bearer ${token}` }, timeout: 8000 }
+      { headers: chHeaders(token), timeout: 8000 }
     );
 
     const properties = entityRes.data.properties || [];
@@ -313,7 +313,7 @@ async function updateAssetMetadata(assetId, metadata, token, instance) {
     await axios.put(
       `https://${instance}/api/entities/${assetId}`,
       { properties },
-      { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 8000 }
+      { headers: chHeaders(token), timeout: 8000 }
     );
     console.log(`[Metadata] Updated for #${assetId}`);
   } catch (err) {
