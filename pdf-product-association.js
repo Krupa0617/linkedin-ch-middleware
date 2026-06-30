@@ -468,7 +468,28 @@ async function createRelatedAssetRelations(pdfAssetId, matches, token, instance)
         { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
       );
       console.log(`[Relation] S3 status=${s3Res.status}, data=${JSON.stringify(s3Res.data || '').substring(0, 500)}`);
-      if (s3Res.status === 200) { console.log(`[Relation] ✅ via S3`); return; }
+      if (s3Res.status === 200) {
+        // Verify: re-fetch the entity and check the relations
+        console.log(`[Relation] S3 returned 200 — verifying by re-fetching entity...`);
+        const vRes = await axios.get(
+          `https://${instance}/api/entities/${pdfAssetId}`,
+          { headers: chHeaders(token), timeout: 10000 }
+        );
+        const vRel = vRes.data?.relations?.[RELATION_TYPE] || {};
+        console.log(`[Relation] Verify: ${RELATION_TYPE} = ${JSON.stringify(vRel).substring(0, 400)}`);
+        // Also try to read the relation endpoint to check if children were added
+        const relHref = vRel?.href;
+        if (relHref) {
+          const relRes = await axios.get(relHref, { headers: chHeaders(token), timeout: 10000, validateStatus: s => true });
+          console.log(`[Relation] Verify endpoint: status=${relRes.status}, data=${JSON.stringify(relRes.data || '').substring(0, 500)}`);
+          const children = relRes.data?.children || relRes.data?.items || [];
+          if (Array.isArray(children) && children.some(c => productIds.includes(Number(c.id)))) {
+            console.log(`[Relation] ✅ S3 confirmed — relations persisted!`);
+            return;
+          }
+          console.log(`[Relation] ⚠️ S3 returned 200 but children NOT found in relation endpoint — continuing...`);
+        }
+      }
     } catch (e3) { console.log(`[Relation] S3 error: ${e3.message}`); }
 
     // ── Strategy 4: POST as M.Relation entity creation ──
