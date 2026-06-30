@@ -338,10 +338,12 @@ app.post('/api/pdf/associate', async (req, res) => {
   try {
     console.log('[Handler] Body:', JSON.stringify(req.body));
 
-    const { entityId, fileName, instanceUrl, entity } = req.body || {};
-    const pdfAssetId = entityId || entity?.id;
-    const pdfFilename = fileName || entity?.properties?.FileName || 'unknown.pdf';
-    const instance = instanceUrl || INSTANCE;
+    // const { entityId, fileName, instanceUrl, entity } = req.body || {};
+    const saveMsg = req.body?.saveEntityMessage;
+    const pdfAssetId = saveMsg?.TargetId;
+    const fileNameChange = saveMsg?.ChangeSet?.PropertyChanges?.find(p => p.Property === 'FileName');
+    const pdfFilename = fileNameChange?.NewValue || 'unknown.pdf'; 
+    const instance = req.body?.instanceUrl || INSTANCE;
 
     if (!pdfAssetId) {
       return res.status(200).json({ success: false, error: 'No entityId provided' });
