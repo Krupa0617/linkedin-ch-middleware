@@ -1,10 +1,13 @@
-import PDFParse from 'pdf-parse';
+import { createRequire } from 'module';
 import axios from 'axios';
 import express from 'express';
 
+const require = createRequire(import.meta.url);
+const PDFParse = require('pdf-parse');
+
 const app = express();
 app.use(express.json());
-
+// ... rest of code stays the same
 // ═══════════════════════════════════════════════════
 // PDF → Related Assets Association
 // When a PDF is uploaded to Content Hub as an Asset,
@@ -119,17 +122,21 @@ async function downloadPDF(assetId, token, instance) {
 // ==================== PDF PARSING (pdf-parse v3) ====================
 
 async function extractPDFContent(pdfBuffer) {
-  const parser = new PDFParse({ data: pdfBuffer });
+ // At the top:
+let PDFParse;
 
-  let textResult, infoResult;
-  try {
-    [textResult, infoResult] = await Promise.all([
-      parser.getText(),
-      parser.getInfo(),
-    ]);
-  } finally {
-    await parser.destroy().catch(() => {});
+// In your handler, before using it:
+async function initPDFParse() {
+  if (!PDFParse) {
+    const module = await import('pdf-parse');
+    PDFParse = module.default;
   }
+  return PDFParse;
+}
+
+// In the main handler, after auth:
+await initPDFParse();
+const pdfContent = await extractPDFContent(pdfBuffer);
 
   const fullText = textResult?.text || '';
   const text = fullText.substring(0, 3000);
