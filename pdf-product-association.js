@@ -401,10 +401,11 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
   for (const asset of matches) {
     let ok = false;
 
-    // Strategy 1 — PUT /api/entities/{matchedAssetId} with relations + entitydefinition
-    // Content Hub requires the 'entitydefinition' property in PUT body
+    // Strategy 1 — PUT /api/entities/{matchedAssetId} with relations (href format)
+    // { "RelatedAsset": { "add": [{ "href": "https://..." }] } }
     const entityDef = asset.entitydefinition || 'M.Asset';
-    const body = { entitydefinition: entityDef, relations: { [RELATION_TYPE]: { add: [assetId] } } };
+    const entityHref = `https://${instance}/api/entities/${assetId}`;
+    const body = { entitydefinition: entityDef, relations: { [RELATION_TYPE]: { add: [{ href: entityHref }] } } };
     try {
       const resp = await axios.put(
         `https://${instance}/api/entities/${asset.id}`,
@@ -412,13 +413,41 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
         { headers: chHeaders(token), timeout: 8000, validateStatus: s => true }
       );
       if (resp.status === 200) {
-        console.log(`[Relation] ✅ #${asset.id} ← #${assetId} via PUT entity`);
+        console.log(`[Relation] ✅ #${asset.id} ← #${assetId} via PUT entity (href format)`);
         ok = true;
-      } else {
-        console.log(`[Relation] PUT entity #${asset.id}: status=${resp.status}, body=${JSON.stringify(resp.data).substring(0, 300)}`);
       }
     } catch (err) {
       console.log(`[Relation] PUT entity #${asset.id}: ${err.response?.status || err.message} — ${JSON.stringify(err.response?.data || '').substring(0, 200)}`);
+    }
+
+    if (!ok) {
+      // Strategy 2 — child format: { "RelatedAsset": { "child": [{ "id": assetId }] } }
+      try {
+        const resp = await axios.put(
+          `https://${instance}/api/entities/${asset.id}`,
+          { entitydefinition: entityDef, relations: { [RELATION_TYPE]: { child: [{ id: assetId }] } } },
+          { headers: chHeaders(token), timeout: 8000, validateStatus: s => true }
+        );
+        if (resp.status === 200) {
+          console.log(`[Relation] ✅ #${asset.id} ← #${assetId} via PUT entity (child format)`);
+          ok = true;
+        }
+      } catch { /* silence */ }
+    }
+
+    if (!ok) {
+      // Strategy 3 — id array: { "RelatedAsset": [{ "id": assetId }] }
+      try {
+        const resp = await axios.put(
+          `https://${instance}/api/entities/${asset.id}`,
+          { entitydefinition: entityDef, relations: { [RELATION_TYPE]: [{ id: assetId }] } },
+          { headers: chHeaders(token), timeout: 8000, validateStatus: s => true }
+        );
+        if (resp.status === 200) {
+          console.log(`[Relation] ✅ #${asset.id} ← #${assetId} via PUT entity (id array format)`);
+          ok = true;
+        }
+      } catch { /* silence */ }
     }
 
     if (!ok) {
