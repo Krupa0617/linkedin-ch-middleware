@@ -292,7 +292,7 @@ async function searchRelatedAssets(pdfContent, token, excludeId, instance) {
         `https://${instance}/api/entities`,
         {
           params: {
-            query: `entitydefinition:M.Asset AND name:"*${keyword.replace(/[\\"*()]/g, '')}*"`,
+            query: `entitydefinition:M.Asset AND name contains '${keyword.replace(/[\\"*()']/g, '')}'`,
             limit: 5,
             select: 'id,name,description,tags,Title',
           },
@@ -404,16 +404,17 @@ async function updateAssetMetadata(assetId, metadata, token, instance) {
       { headers: chHeaders(token), timeout: 8000 }
     );
 
-    const properties = entityRes.data.properties || [];
+    // Content Hub returns properties as an object {key: value}, not an array [{name, value}]
+    const current = entityRes.data.properties || {};
+
+    // Merge metadata into current properties object
     Object.entries(metadata).forEach(([key, value]) => {
-      const existing = properties.find(p => p.name === key);
-      if (existing) existing.value = value;
-      else properties.push({ name: key, value });
+      current[key] = value;
     });
 
     await axios.put(
       `https://${instance}/api/entities/${assetId}`,
-      { properties },
+      { properties: current },
       { headers: chHeaders(token), timeout: 8000 }
     );
     console.log(`[Metadata] Updated for #${assetId}`);
