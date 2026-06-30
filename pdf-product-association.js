@@ -386,23 +386,75 @@ function scoreMatch(keyword, item) {
   return Math.min(score, 0.99);
 }
 
-// ==================== RELATIONS ====================
+// ==================== RELATIONS (via RelatedAssets property) ====================
 
 async function createRelatedAssetRelations(assetId, matches, token, instance) {
   for (const asset of matches) {
     let ok = false;
 
-    // Strategy 1 — v2 relations endpoint
+    // Strategy 1 — Update the RelatedAssets property on the MATCHED asset to include the PDF asset
+    // The user wants the matched asset's "RelatedAssets" field to reference the uploaded PDF
     try {
-      await axios.post(
-        `https://${instance}/api/relations`,
-        { relationType: RELATION_TYPE, source: String(assetId), target: String(asset.id), sourceType: 'M.Asset', targetType: 'M.Asset' },
-        { headers: chHeaders(token), timeout: 10000 },
+      const entityRes = await axios.get(
+        `https://${instance}/api/entities/${asset.id}`,
+        { headers: chHeaders(token), timeout: 8000 }
       );
-      ok = true;
-    } catch { /* fall through */ }
 
-    // Strategy 2 — entity relations endpoint
+      const currentProps = entityRes.data.properties || {};
+      const existing = currentProps['RelatedAssets'] || currentProps['Asset.RelatedAssets'] || [];
+
+      // Add the PDF asset ID if not already present
+      const relatedIds = Array.isArray(existing) ? [...existing] : [];
+      if (!relatedIds.includes(assetId)) {
+        relatedIds.push(assetId);
+      }
+
+      // Try updating with both possible field names
+      const updateProps = {
+        ...currentProps,
+        'RelatedAssets': relatedIds,
+        'Asset.RelatedAssets': relatedIds,
+      };
+
+      try {
+        await axios.put(
+          `https://${instance}/api/entities/${asset.id}`,
+          { properties: updateProps },
+          { headers: chHeaders(token), timeout: 8000 }
+        );
+        console.log(`[Relation] ✅ #${asset.id} RelatedAssets updated via PUT (${relatedIds.length} items)`);
+        ok = true;
+      } catch (putErr) {
+        // Fall back to PATCH
+        try {
+          await axios.patch(
+            `https://${instance}/api/entities/${asset.id}`,
+            { properties: { 'RelatedAssets': relatedIds, 'Asset.RelatedAssets': relatedIds } },
+            { headers: chHeaders(token), timeout: 8000 }
+          );
+          console.log(`[Relation] ✅ #${asset.id} RelatedAssets updated via PATCH`);
+          ok = true;
+        } catch { /* fall through to strategy 2 */ }
+      }
+    } catch (err) {
+      console.log(`[Relation] Read entity #${asset.id}: ${err.message}`);
+    }
+
+    // Strategy 2 — v2 relations endpoint
+    if (!ok) {
+      try {
+        await axios.post(
+          `https://${instance}/api/relations`,
+          { relationType: RELATION_TYPE, source: String(assetId), target: String(asset.id), sourceType: 'M.Asset', targetType: 'M.Asset' },
+          { headers: chHeaders(token), timeout: 10000 },
+        );
+        ok = true;
+      } catch (err) {
+        console.log(`[Relation] POST /api/relations: ${err.message}`);
+      }
+    }
+
+    // Strategy 3 — entity relations endpoint
     if (!ok) {
       try {
         await axios.post(
@@ -411,19 +463,9 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
           { headers: chHeaders(token), timeout: 10000 },
         );
         ok = true;
-      } catch { /* fall through */ }
-    }
-
-    // Strategy 3 — legacy
-    if (!ok) {
-      try {
-        await axios.post(
-          `https://${instance}/api/entities/${assetId}/relations/${RELATION_TYPE}`,
-          { id: String(asset.id) },
-          { headers: chHeaders(token), timeout: 10000 },
-        );
-        ok = true;
-      } catch { /* fall through */ }
+      } catch (err) {
+        console.log(`[Relation] POST /api/entities/${assetId}/relations: ${err.message}`);
+      }
     }
 
     console.log(ok
