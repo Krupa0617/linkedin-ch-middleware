@@ -1,6 +1,6 @@
 import axios from 'axios';
 import express from 'express';
-import pdfParse from 'pdf-parse';
+import { PDFParse } from 'pdf-parse';
 
 const app = express();
 app.use(express.json());
@@ -231,10 +231,14 @@ function extractDownloadUrlsFromRenditions(renditionsData, instance, assetId) {
 // ==================== PDF PARSING (pdf-parse - pure JS, no system deps) ====================
 
 async function extractPDFContent(pdfBuffer) {
+  let parser;
   try {
-    const data = await pdfParse(pdfBuffer);
-    const text = (data.text || '').substring(0, 3000).trim();
-    const pageCount = data.numpages || 1;
+    parser = new PDFParse({ data: pdfBuffer });
+    const textResult = await parser.getText();
+    const infoResult = await parser.getInfo();
+
+    const text = (textResult.text || '').substring(0, 3000).trim();
+    const pageCount = infoResult?.total || textResult.pages?.length || 1;
 
     // Extract product numbers (HIM-XXXX format)
     const productNumberRegex = /[A-Z]{2,4}-\d{3,6}/g;
@@ -262,14 +266,18 @@ async function extractPDFContent(pdfBuffer) {
       productNumbers: [...new Set(foundProductNumbers)],
       keywords,
       metadata: {
-        title: data.info?.Title || '',
-        author: data.info?.Author || '',
+        title: infoResult?.info?.Title || '',
+        author: infoResult?.info?.Author || '',
         subject: '',
       },
     };
   } catch (err) {
     console.error('[PDF] Error:', err.message);
     throw new Error(`PDF extraction failed: ${err.message}`);
+  } finally {
+    if (parser) {
+      try { await parser.destroy(); } catch { /* ignore */ }
+    }
   }
 }
 
