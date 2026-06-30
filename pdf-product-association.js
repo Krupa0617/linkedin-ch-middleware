@@ -398,104 +398,130 @@ function scoreMatch(keyword, item) {
 // ==================== RELATIONS ====================
 
 async function createRelatedAssetRelations(pdfAssetId, matches, token, instance) {
-  // The PDF-side PUT to /entities/{pdfId}/relations/RelatedAsset returned
-  // 403 "Relation 'RelatedAsset' is not navigable and cannot be updated."
-  // This means RelatedAsset is only writable from the PRODUCT (parent) side.
-  // So instead of writing PDF → products, we write product → PDF, once per match.
   try {
     console.log(`[Relation] Linking PDF #${pdfAssetId} to ${matches.length} product(s)...`);
 
-    let anySucceeded = false;
+    // GET the PDF entity once (needed for all entity-PUT strategies)
+    const getRes = await axios.get(
+      `https://${instance}/api/entities/${pdfAssetId}`,
+      { headers: chHeaders(token), timeout: 10000 }
+    );
+    const pdfEntity = getRes.data;
+    const entityDef = pdfEntity.entitydefinition || 'M.Asset';
+    const productIds = matches.map(m => Number(m.id));
 
-    for (const asset of matches) {
-      const productId = asset.id;
-      const relationHref = `https://${instance}/api/entities/${productId}/relations/${RELATION_TYPE}`;
-
-      // 1. Read the product's current RelatedAsset children so we don't clobber existing links
-      const getRelRes = await axios.get(
-        relationHref,
-        { headers: chHeaders(token), timeout: 10000, validateStatus: s => true }
-      );
-
-      if (getRelRes.status !== 200) {
-        console.log(`[Relation] ❌ Could not read relation for product #${productId}: status=${getRelRes.status}, data=${JSON.stringify(getRelRes.data || '').substring(0, 300)}`);
-        continue;
-      }
-
-      const existingChildren = getRelRes.data?.children || getRelRes.data?.items || getRelRes.data?.results || [];
-      const existingIds = Array.isArray(existingChildren) ? existingChildren.map(c => Number(c.id)) : [];
-
-      if (existingIds.includes(Number(pdfAssetId))) {
-        console.log(`[Relation] Already linked: product #${productId} → PDF #${pdfAssetId}`);
-        anySucceeded = true;
-        continue;
-      }
-
-      // 2. PUT back the existing children plus the new PDF id
-      const newChildren = [...existingIds.map(id => ({ id })), { id: Number(pdfAssetId) }];
-      const putRes = await axios.put(
-        relationHref,
-        { children: newChildren },
+    // ── Strategy 1: Entity PUT with relations → "add" + "id" format ──
+    console.log(`[Relation] Strategy 1 — PUT entity with relations.add.id ...`);
+    const s1Body = {
+      entitydefinition: entityDef,
+      properties: pdfEntity.properties || {},
+      relations: {
+        [RELATION_TYPE]: { add: productIds.map(id => ({ id })) }
+      },
+    };
+    try {
+      const s1Res = await axios.put(
+        `https://${instance}/api/entities/${pdfAssetId}`,
+        s1Body,
         { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
       );
+      console.log(`[Relation] S1 status=${s1Res.status}, data=${JSON.stringify(s1Res.data || '').substring(0, 500)}`);
+      if (s1Res.status === 200) { console.log(`[Relation] ✅ via S1`); return; }
+    } catch (e) { console.log(`[Relation] S1 error: ${e.message}`); }
 
-      console.log(`[Relation] PUT product #${productId} relations: status=${putRes.status}, statusText="${putRes.statusText}", data=${JSON.stringify(putRes.data || '').substring(0, 300)}`);
-
-      if (putRes.status >= 200 && putRes.status < 300) {
-        console.log(`[Relation] ✅ Product #${productId} (${asset.name}) → PDF #${pdfAssetId}`);
-        anySucceeded = true;
-      } else {
-        console.log(`[Relation] ⚠️ PUT failed for product #${productId}: status=${putRes.status}`);
-      }
-    }
-
-    // 3. Verify by re-reading each product's relation
-    console.log(`[Relation] Verifying...`);
+    // ── Strategy 2: Entity PUT with @odata.bind on the PRODUCT entities ──
+    console.log(`[Relation] Strategy 2 — PUT each product entity with @odata.bind to PDF...`);
+    const odataRelName = `${RELATION_TYPE}@odata.bind`;
+    const pdfEntityUrl = `https://${instance}/api/entities/${pdfAssetId}`;
     for (const asset of matches) {
-      const relationHref = `https://${instance}/api/entities/${asset.id}/relations/${RELATION_TYPE}`;
       try {
-        const verifyRes = await axios.get(
-          relationHref,
-          { headers: chHeaders(token), timeout: 10000, validateStatus: s => true }
+        const prodRes = await axios.get(
+          `https://${instance}/api/entities/${asset.id}`,
+          { headers: chHeaders(token), timeout: 10000 }
         );
-        console.log(`[Relation] Verify product #${asset.id}: status=${verifyRes.status}, data=${JSON.stringify(verifyRes.data || '').substring(0, 500)}`);
-      } catch (verifyErr) {
-        console.log(`[Relation] Verify failed for product #${asset.id}: ${verifyErr.message}`);
-      }
+        const prodEntity = prodRes.data;
+        const prodEntityDef = prodEntity.entitydefinition || 'M.Asset';
+        const s2Res = await axios.put(
+          `https://${instance}/api/entities/${asset.id}`,
+          {
+            entitydefinition: prodEntityDef,
+            properties: prodEntity.properties || {},
+            [odataRelName]: [pdfEntityUrl],
+          },
+          { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
+        );
+        console.log(`[Relation] S2 product #${asset.id}: status=${s2Res.status}, data=${JSON.stringify(s2Res.data || '').substring(0, 300)}`);
+      } catch (e2) { console.log(`[Relation] S2 product #${asset.id} error: ${e2.message}`); }
     }
 
-    if (!anySucceeded) {
-      console.log(`[Relation] ⚠️ No relations confirmed — falling back to PDF-side @odata.bind PUT (may be a no-op, kept for diagnostics)`);
-
-      const getRes = await axios.get(
+    // ── Strategy 3: PUT entity with direct navigation property array (no wrapper) ──
+    console.log(`[Relation] Strategy 3 — PUT entity with direct nav property array...`);
+    const s3Body = {
+      entitydefinition: entityDef,
+      properties: pdfEntity.properties || {},
+      [RELATION_TYPE]: productIds.map(id => ({ id })),
+    };
+    try {
+      const s3Res = await axios.put(
         `https://${instance}/api/entities/${pdfAssetId}`,
-        { headers: chHeaders(token), timeout: 10000 }
-      );
-      const pdfEntity = getRes.data;
-      const entityDef = pdfEntity.entitydefinition || 'M.Asset';
-      const odataRelName = `${RELATION_TYPE}@odata.bind`;
-      const entityUrls = matches.map(m => `https://${instance}/api/entities/${m.id}`);
-
-      const putBody = {
-        entitydefinition: entityDef,
-        properties: pdfEntity.properties || {},
-        [odataRelName]: entityUrls,
-      };
-      const fallbackRes = await axios.put(
-        `https://${instance}/api/entities/${pdfAssetId}`,
-        putBody,
+        s3Body,
         { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
       );
-      console.log(`[Relation] Fallback PUT (PDF-side): status=${fallbackRes.status}, data=${JSON.stringify(fallbackRes.data || '').substring(0, 300)}`);
+      console.log(`[Relation] S3 status=${s3Res.status}, data=${JSON.stringify(s3Res.data || '').substring(0, 500)}`);
+      if (s3Res.status === 200) { console.log(`[Relation] ✅ via S3`); return; }
+    } catch (e3) { console.log(`[Relation] S3 error: ${e3.message}`); }
+
+    // ── Strategy 4: POST as M.Relation entity creation ──
+    console.log(`[Relation] Strategy 4 — POST new M.Relation entity for each product...`);
+    const relEntityDef = { href: `https://${instance}/api/entitydefinitions/M.Relation`, title: 'Relation' };
+    for (const pid of productIds) {
+      try {
+        const s4Res = await axios.post(
+          `https://${instance}/api/entities`,
+          {
+            entitydefinition: relEntityDef,
+            properties: {
+              Source: pdfAssetId,
+              Target: pid,
+              RelationType: RELATION_TYPE,
+            },
+          },
+          { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
+        );
+        console.log(`[Relation] S4 POST M.Relation source=${pdfAssetId} target=${pid}: status=${s4Res.status}, data=${JSON.stringify(s4Res.data || '').substring(0, 300)}`);
+      } catch (e4) { console.log(`[Relation] S4 error: ${e4.message}`); }
     }
+
+    // ── Strategy 5: POST to /api/relations endpoint ──
+    console.log(`[Relation] Strategy 5 — POST to /api/relations...`);
+    try {
+      const s5Res = await axios.post(
+        `https://${instance}/api/relations`,
+        { sources: [pdfAssetId], targets: productIds, relationType: RELATION_TYPE },
+        { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
+      );
+      console.log(`[Relation] S5 status=${s5Res.status}, data=${JSON.stringify(s5Res.data || '').substring(0, 500)}`);
+      if (s5Res.status === 200 || s5Res.status === 201) { console.log(`[Relation] ✅ via S5`); return; }
+    } catch (e5) { console.log(`[Relation] S5 error: ${e5.message}`); }
+
+    // ── Strategy 6: PUT to product relations endpoint with parents format ──
+    console.log(`[Relation] Strategy 6 — PUT product relation with parents...`);
+    for (const asset of matches) {
+      try {
+        const s6Res = await axios.put(
+          `https://${instance}/api/entities/${asset.id}/relations/${RELATION_TYPE}`,
+          { parents: [{ id: Number(pdfAssetId) }] },
+          { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
+        );
+        console.log(`[Relation] S6 product #${asset.id}: status=${s6Res.status}, data=${JSON.stringify(s6Res.data || '').substring(0, 300)}`);
+      } catch (e6) { console.log(`[Relation] S6 error: ${e6.message}`); }
+    }
+
+    console.log(`[Relation] ⚠️ All strategies attempted — see logs above`);
   } catch (err) {
     console.log(`[Relation] ❌ Error: ${err.message}`);
     if (err.response) {
-      console.log(`[Relation] Error details: status=${err.response.status}, statusText="${err.response.statusText}", data=${JSON.stringify(err.response.data || '').substring(0, 500)}`);
-    } else if (err.request) {
-      console.log(`[Relation] Error: no response received`);
-    } else {
-      console.log(`[Relation] Error: ${err.stack || err.message}`);
+      console.log(`[Relation] Error details: status=${err.response.status}, data=${JSON.stringify(err.response.data || '').substring(0, 500)}`);
     }
   }
 }
