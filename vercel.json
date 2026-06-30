@@ -7,7 +7,7 @@
     { "src": "pdf-product-association.js", "use": "@vercel/node" }
   ],
   "routes": [
-    { "src": "/api/pdf/associate", "dest": "pdf-product-association.js" },
+    { "src": "/api/associate-pdf", "dest": "pdf-product-association.js" },
     { "src": "/api/figma/(.*)",    "dest": "figma.js" },
     { "src": "/api/instagram/(.*)", "dest": "instaindex.js" },
     { "src": "/api/linkedin/(.*)", "dest": "index.js" },
