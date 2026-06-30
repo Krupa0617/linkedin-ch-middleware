@@ -303,7 +303,7 @@ async function updateAssetMetadata(assetId, metadata, token, instance) {
     });
 
     await axios.put(
-      `https://${instance}/api/v2/entities/${assetId}`,
+      `https://${instance}/api/entities/${assetId}`,
       { properties },
       { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 8000 }
     );
