@@ -1,4 +1,4 @@
-import { PDFParse } from 'pdf-parse';
+import PDFParse from 'pdf-parse';
 import axios from 'axios';
 import express from 'express';
 
@@ -405,8 +405,9 @@ app.post('/api/pdf/associate', async (req, res) => {
   } catch (error) {
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
     console.error(`[Handler] Error after ${elapsed}s:`, error.message);
+    console.error('[Handler] Stack:', error.stack);
 
-    return res.json({
+    return res.status(500).json({
       success: false,
       error: error.message,
       fallbackAction: 'manual_review_required',
@@ -414,4 +415,20 @@ app.post('/api/pdf/associate', async (req, res) => {
   }
 });
 
-export default app;
+// ==================== VERCEL HANDLER ====================
+// Wrap Express app for Vercel serverless function
+export default async (req, res) => {
+  try {
+    return await new Promise((resolve) => {
+      app(req, res);
+      res.on('finish', () => resolve());
+    });
+  } catch (err) {
+    console.error('[Vercel Handler] Critical error:', err.message);
+    res.status(500).json({
+      success: false,
+      error: 'Serverless function error',
+      details: err.message,
+    });
+  }
+};
