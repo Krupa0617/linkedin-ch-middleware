@@ -1,9 +1,9 @@
-import * as pdfjsLib from 'pdfjs-dist';
+import { createRequire } from 'module';
 import axios from 'axios';
 import express from 'express';
 
-// Set up pdf.js worker (uses CDN version)
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+const require = createRequire(import.meta.url);
+const extractText = require('pdf-text-extract');
 
 const app = express();
 app.use(express.json());
@@ -119,61 +119,60 @@ async function downloadPDF(assetId, token, instance) {
   return Buffer.from(fileRes.data);
 }
 
-// ==================== PDF PARSING (pdfjs-dist) ====================
+// ==================== PDF PARSING (pdf-text-extract - Node.js native) ====================
 
 async function extractPDFContent(pdfBuffer) {
-  try {
-    const pdf = await pdfjsLib.getDocument({ data: pdfBuffer }).promise;
-    
-    let fullText = '';
-    for (let i = 1; i <= pdf.numPages; i++) {
-      try {
-        const page = await pdf.getPage(i);
-        const textContent = await page.getTextContent();
-        const pageText = textContent.items.map(item => item.str || '').join(' ');
-        fullText += ' ' + pageText;
-      } catch (pageErr) {
-        console.warn(`[PDF] Warning extracting page ${i}:`, pageErr.message);
-      }
+  return new Promise((resolve, reject) => {
+    try {
+      // pdf-text-extract works with buffer directly
+      extractText(pdfBuffer, (err, pages) => {
+        if (err) {
+          console.error('[PDF] Error extracting:', err.message);
+          return reject(new Error(`PDF extraction failed: ${err.message}`));
+        }
+
+        // pages is an array of text strings, one per page
+        const fullText = Array.isArray(pages) ? pages.join(' ') : String(pages || '');
+        const text = fullText.substring(0, 3000).trim();
+        const pageCount = Array.isArray(pages) ? pages.length : 1;
+
+        // Extract product numbers (HIM-XXXX format)
+        const productNumberRegex = /[A-Z]{2,4}-\d{3,6}/g;
+        const foundProductNumbers = text.match(productNumberRegex) || [];
+
+        // Extract keywords by frequency
+        const rawWords = text
+          .toLowerCase()
+          .split(/[\s\n\r,\.\;:!?()"'\-\–—/\\|@#$%^&*+=<>[\]{}~`]+/)
+          .filter(w => w.length >= 4 && w.length <= 50)
+          .filter(w => !/^\d[\d\-_\s]*$/.test(w))
+          .filter(w => !STOP_WORDS.has(w));
+
+        const freq = {};
+        rawWords.forEach(w => { freq[w] = (freq[w] || 0) + 1; });
+        const keywords = [...new Set(rawWords)]
+          .sort((a, b) => (freq[b] - freq[a]) || a.localeCompare(b))
+          .slice(0, 25);
+
+        console.log(`[PDF] Extracted ${text.length} chars, ${keywords.length} keywords from ${pageCount} pages`);
+
+        resolve({
+          text,
+          pages: pageCount,
+          productNumbers: [...new Set(foundProductNumbers)],
+          keywords,
+          metadata: {
+            title: '',
+            author: '',
+            subject: '',
+          },
+        });
+      });
+    } catch (err) {
+      console.error('[PDF] Error:', err.message);
+      reject(new Error(`PDF extraction failed: ${err.message}`));
     }
-
-    const text = fullText.substring(0, 3000).trim();
-
-    // Extract product numbers (HIM-XXXX format)
-    const productNumberRegex = /[A-Z]{2,4}-\d{3,6}/g;
-    const foundProductNumbers = text.match(productNumberRegex) || [];
-
-    // Extract keywords by frequency
-    const rawWords = text
-      .toLowerCase()
-      .split(/[\s\n\r,\.\;:!?()"'\-\–—/\\|@#$%^&*+=<>[\]{}~`]+/)
-      .filter(w => w.length >= 4 && w.length <= 50)
-      .filter(w => !/^\d[\d\-_\s]*$/.test(w))
-      .filter(w => !STOP_WORDS.has(w));
-
-    const freq = {};
-    rawWords.forEach(w => { freq[w] = (freq[w] || 0) + 1; });
-    const keywords = [...new Set(rawWords)]
-      .sort((a, b) => (freq[b] - freq[a]) || a.localeCompare(b))
-      .slice(0, 25);
-
-    console.log(`[PDF] Extracted ${text.length} chars, ${keywords.length} keywords from ${pdf.numPages} pages`);
-
-    return {
-      text,
-      pages: pdf.numPages,
-      productNumbers: [...new Set(foundProductNumbers)],
-      keywords,
-      metadata: {
-        title: pdf.documentInfo?.Title || '',
-        author: pdf.documentInfo?.Author || '',
-        subject: pdf.documentInfo?.Subject || '',
-      },
-    };
-  } catch (err) {
-    console.error('[PDF] Error extracting content:', err.message);
-    throw new Error(`PDF extraction failed: ${err.message}`);
-  }
+  });
 }
 
 // ==================== SEARCH RELATED ASSETS ====================
