@@ -401,9 +401,10 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
   for (const asset of matches) {
     let ok = false;
 
-    // Strategy 1 — PUT /api/entities/{matchedAssetId} with relations
-    // Uses the entity update endpoint with relations block
-    const body = { relations: { [RELATION_TYPE]: { add: [assetId] } } };
+    // Strategy 1 — PUT /api/entities/{matchedAssetId} with relations + entitydefinition
+    // Content Hub requires the 'entitydefinition' property in PUT body
+    const entityDef = asset.entitydefinition || 'M.Asset';
+    const body = { entitydefinition: entityDef, relations: { [RELATION_TYPE]: { add: [assetId] } } };
     try {
       const resp = await axios.put(
         `https://${instance}/api/entities/${asset.id}`,
@@ -431,7 +432,7 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
 async function updateAssetMetadata(assetId, metadata, token, instance) {
   const logPrefix = `[Metadata #${assetId}]`;
   try {
-    // Strategy 1 — PUT full entity with merged properties
+    // Strategy 1 — PUT full entity with merged properties + entitydefinition
     const entityRes = await axios.get(
       `https://${instance}/api/entities/${assetId}`,
       { headers: chHeaders(token), timeout: 8000 }
@@ -442,18 +443,20 @@ async function updateAssetMetadata(assetId, metadata, token, instance) {
       current[key] = value;
     });
 
+    const entityDef = entityRes.data.entitydefinition || 'M.Asset';
     await axios.put(
       `https://${instance}/api/entities/${assetId}`,
-      { properties: current },
+      { entitydefinition: entityDef, properties: current },
       { headers: chHeaders(token), timeout: 8000 }
     );
     console.log(`${logPrefix} Updated via PUT`);
   } catch (putErr) {
     // Strategy 2 — Try PATCH instead
     try {
+      const entityDef = 'M.Asset';
       await axios.patch(
         `https://${instance}/api/entities/${assetId}`,
-        { properties: metadata },
+        { entitydefinition: entityDef, properties: metadata },
         { headers: chHeaders(token), timeout: 8000 }
       );
       console.log(`${logPrefix} Updated via PATCH`);
