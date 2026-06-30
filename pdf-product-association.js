@@ -321,8 +321,11 @@ async function searchRelatedAssets(pdfContent, token, excludeId, instance) {
           `https://${instance}/api/search`,
           { params: { q: sanitized, entitydefinition: 'M.Asset', limit: 10 }, headers: chHeaders(token), timeout: 10000 },
         );
-        console.log(`[Search] GET /api/search works! Status: ${resp.status}`);
-        for (const item of resp.data?.items || resp.data?.results || resp.data?.data || []) {
+        console.log(`[Search] GET /api/search "${sanitized}" -> Status: ${resp.status}, keys:`, Object.keys(resp.data || {}).join(', '));
+        // Log a snippet of the response to understand structure
+        const snippet = JSON.stringify(resp.data).substring(0, 400);
+        console.log(`[Search] Response snippet: ${snippet}`);
+        for (const item of resp.data?.items || resp.data?.results || resp.data?.data || resp.data?.hits || []) {
           const id = String(item.id || item.Id);
           const name = item.properties?.Name || item.properties?.Title || item.name || item.Name || '';
           if (id === String(excludeId) || seen.has(id)) continue;
