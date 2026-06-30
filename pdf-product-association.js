@@ -442,12 +442,16 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
       return;
     }
 
-    // 4. PUT the PDF asset with merged relations + existing properties
-    existingRelations[RELATION_TYPE] = relatedAssets;
+    // 4. PUT the PDF asset — only send the target relation, not all existing ones.
+    // Content Hub's PUT is partial (same as updateAssetMetadata) — sending back
+    // system-managed relations (AssetTypeToAsset, FinalLifeCycleStatusToAsset, etc.)
+    // causes a 400 validation error.
     const putBody = {
       entitydefinition: entityDef,
       properties: pdfEntity.properties || {},
-      relations: existingRelations,
+      relations: {
+        [RELATION_TYPE]: relatedAssets
+      },
     };
     console.log(`[Relation] PUT #${assetId} body: ${JSON.stringify({ ...putBody, properties: '...(preserved)' }).substring(0, 500)}`);
 
@@ -466,7 +470,7 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
       console.log(`[Relation] PUT 400, trying PATCH fallback...`);
       const patchRes = await axios.patch(
         `https://${instance}/api/entities/${assetId}`,
-        { entitydefinition: entityDef, relations: existingRelations },
+        { entitydefinition: entityDef, relations: { [RELATION_TYPE]: relatedAssets } },
         { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
       );
       console.log(`[Relation] PATCH response: status=${patchRes.status}, data=${JSON.stringify(patchRes.data || '').substring(0, 300)}`);
@@ -500,9 +504,13 @@ async function updateAssetMetadata(assetId, metadata, token, instance) {
       current[key] = value;
     });
 
+    const entityDef = typeof entityRes.data.entitydefinition === 'object'
+      ? (entityRes.data.entitydefinition?.Name || 'M.Asset')
+      : (entityRes.data.entitydefinition || 'M.Asset');
+
     await axios.put(
       `https://${instance}/api/entities/${assetId}`,
-      { properties: current },
+      { entitydefinition: entityDef, properties: current },
       { headers: chHeaders(token), timeout: 8000 }
     );
     console.log(`${logPrefix} Updated via PUT`);
@@ -511,7 +519,7 @@ async function updateAssetMetadata(assetId, metadata, token, instance) {
     try {
       await axios.patch(
         `https://${instance}/api/entities/${assetId}`,
-        { properties: metadata },
+        { entitydefinition: 'M.Asset', properties: metadata },
         { headers: chHeaders(token), timeout: 8000 }
       );
       console.log(`${logPrefix} Updated via PATCH`);
