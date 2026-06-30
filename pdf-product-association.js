@@ -531,10 +531,21 @@ async function createRelatedAssetRelations(pdfAssetId, matches, token, instance)
       try {
         const s6Res = await axios.put(
           `https://${instance}/api/entities/${asset.id}/relations/${RELATION_TYPE}`,
-          { parents: [{ id: Number(pdfAssetId) }] },
+          { parents: [{ href: pdfHref }] },
           { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
         );
         console.log(`[Relation] S6 product #${asset.id}: status=${s6Res.status}, data=${JSON.stringify(s6Res.data || '').substring(0, 300)}`);
+        if (s6Res.status === 200) {
+          const vRes = await axios.get(
+            `https://${instance}/api/entities/${asset.id}/relations/${RELATION_TYPE}`,
+            { headers: chHeaders(token), timeout: 10000, validateStatus: s => true }
+          );
+          console.log(`[Relation] S6 verify #${asset.id}: ${JSON.stringify(vRes.data || '').substring(0, 400)}`);
+          const parents = vRes.data?.parents || [];
+          if (Array.isArray(parents) && parents.some(p => Number(p.id) === Number(pdfAssetId) || p.href?.includes(String(pdfAssetId)))) {
+            console.log(`[Relation] ✅ S6 confirmed — product #${asset.id} now has PDF as parent`);
+          }
+        }
       } catch (e6) { console.log(`[Relation] S6 error: ${e6.message}`); }
     }
 
