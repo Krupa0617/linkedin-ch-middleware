@@ -442,15 +442,13 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
       return;
     }
 
-    // 4. PUT the PDF asset — use @odata.bind for the navigation property.
-    // Content Hub's OData API expects navigation property bindings at the
-    // entity level (e.g. "RelatedAsset@odata.bind") rather than inside a
-    // "relations" key, which is read-only metadata.
+    // 4. PUT the PDF asset with @odata.bind using absolute entity URLs
     const odataRelName = `${RELATION_TYPE}@odata.bind`;
+    const entityUrls = relatedAssets.map(r => `https://${instance}/api/entities/${r.id}`);
     const putBody = {
       entitydefinition: entityDef,
       properties: pdfEntity.properties || {},
-      [odataRelName]: relatedAssets.map(r => `/api/entities/${r.id}`),
+      [odataRelName]: entityUrls,
     };
     console.log(`[Relation] PUT #${assetId} body: ${JSON.stringify({ ...putBody, properties: '...(preserved)' }).substring(0, 500)}`);
 
@@ -464,23 +462,35 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
 
     if (putRes.status === 200 || putRes.status === 204) {
       console.log(`[Relation] ✅ #${assetId} ← ${added.length} product(s): ${added.map(a => `#${a.id} (${a.name})`).join(', ')}`);
-    } else if (putRes.status === 400) {
-      // Fallback: try with @odata.bind without properties (PATCH)
-      console.log(`[Relation] PUT 400, trying PATCH with @odata.bind...`);
-      const odataRelName = `${RELATION_TYPE}@odata.bind`;
-      const patchRes = await axios.patch(
-        `https://${instance}/api/entities/${assetId}`,
-        { [odataRelName]: relatedAssets.map(r => `/api/entities/${r.id}`) },
-        { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
-      );
-      console.log(`[Relation] PATCH response: status=${patchRes.status}, statusText="${patchRes.statusText}", headers=${JSON.stringify(patchRes.headers?.['content-type'] || patchRes.headers || 'none')}, data=${JSON.stringify(patchRes.data || '').substring(0, 500)}, dataLength=${JSON.stringify(patchRes.data || '').length}`);
-      if (patchRes.status === 200 || patchRes.status === 204) {
-        console.log(`[Relation] ✅ #${assetId} ← ${added.length} product(s) via PATCH @odata.bind`);
-      } else {
-        console.log(`[Relation] ⚠️ Failed: PUT ${putRes.status} / PATCH ${patchRes.status}`);
+      return;
+    }
+
+    // Fallback 1: try @odata.bind without properties (in case properties-only PUT is expected)
+    console.log(`[Relation] PUT ${putRes.status}, trying @odata.bind without properties...`);
+    const fb1Res = await axios.put(
+      `https://${instance}/api/entities/${assetId}`,
+      { entitydefinition: entityDef, [odataRelName]: entityUrls },
+      { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
+    );
+    console.log(`[Relation] Fallback 1 response: status=${fb1Res.status}, data=${JSON.stringify(fb1Res.data || '').substring(0, 300)}`);
+    if (fb1Res.status === 200 || fb1Res.status === 204) {
+      console.log(`[Relation] ✅ #${assetId} ← ${added.length} product(s) via PUT (no properties)`);
+      return;
+    }
+
+    // Fallback 2: try POST to /api/entities/{id}/{relationName} for each product
+    console.log(`[Relation] Fallback 1 failed (${fb1Res.status}), trying POST per-product...`);
+    for (const asset of added) {
+      try {
+        const postRes = await axios.post(
+          `https://${instance}/api/entities/${assetId}/${RELATION_TYPE}`,
+          {},
+          { params: { 'id': asset.id }, headers: chHeaders(token), timeout: 10000, validateStatus: s => true }
+        );
+        console.log(`[Relation] POST #${assetId}/${RELATION_TYPE} for #${asset.id}: status=${postRes.status}`);
+      } catch (postErr) {
+        console.log(`[Relation] POST #${assetId}/${RELATION_TYPE} for #${asset.id}: ${postErr.message}`);
       }
-    } else {
-      console.log(`[Relation] ⚠️ Unexpected status ${putRes.status}`);
     }
   } catch (err) {
     console.log(`[Relation] ❌ Error: ${err.message}`);
