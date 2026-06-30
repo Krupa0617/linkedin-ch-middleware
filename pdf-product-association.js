@@ -290,25 +290,27 @@ async function searchRelatedAssets(pdfContent, token, excludeId, instance) {
     const sanitized = searchTerm.replace(/[\\"'*()]/g, '');
     let found = false;
 
-    // Strategy 1 — POST /api/query (M.Query)
+    // Strategy 1 — GET /api/entities with no filter (probe endpoint)
+    // then manually filter by keyword in name
     if (!found) {
       try {
-        const resp = await axios.post(
-          `https://${instance}/api/query`,
-          { query: `FROM M.Asset WHERE name CONTAINS '${sanitized}' SELECT Name, Title, Description` },
-          { headers: chHeaders(token), timeout: 10000 },
+        const resp = await axios.get(
+          `https://${instance}/api/entities`,
+          { params: { limit: 20, select: 'id,name,description' }, headers: chHeaders(token), timeout: 10000 },
         );
-        for (const item of resp.data?.items || resp.data?.data || []) {
-          const id = String(item.id || item.Id);
-          const name = item.properties?.Name || item.properties?.Title || item.name || item.Name || '';
+        console.log(`[Search] GET /api/entities (no filter) works! Items:`, resp.data?.items?.length);
+        for (const item of resp.data?.items || []) {
+          const name = (item.properties?.Name || item.properties?.Title || item.name || '').toLowerCase();
+          if (!name.includes(sanitized.toLowerCase())) continue;
+          const id = String(item.id);
           if (id === String(excludeId) || seen.has(id)) continue;
           seen.add(id);
           const confidence = scoreMatch(searchTerm, item);
-          if (confidence >= CONFIDENCE_MIN) matched.push({ id, name, confidence, matchedKeyword: searchTerm });
+          if (confidence >= CONFIDENCE_MIN) matched.push({ id, name: item.properties?.Name || item.name, confidence, matchedKeyword: searchTerm });
         }
-        if (resp.data?.items?.length || resp.data?.data?.length) found = true;
+        found = true;
       } catch (err) {
-        console.log(`[Search] POST /api/query "${searchTerm}": ${err.message}`);
+        console.log(`[Search] GET /api/entities (no filter): ${err.message}`);
       }
     }
 
@@ -317,13 +319,10 @@ async function searchRelatedAssets(pdfContent, token, excludeId, instance) {
       try {
         const resp = await axios.get(
           `https://${instance}/api/search`,
-          {
-            params: { q: sanitized, entitydefinition: 'M.Asset', limit: 5 },
-            headers: chHeaders(token),
-            timeout: 10000,
-          },
+          { params: { q: sanitized, entitydefinition: 'M.Asset', limit: 10 }, headers: chHeaders(token), timeout: 10000 },
         );
-        for (const item of resp.data?.items || resp.data?.results || []) {
+        console.log(`[Search] GET /api/search works! Status: ${resp.status}`);
+        for (const item of resp.data?.items || resp.data?.results || resp.data?.data || []) {
           const id = String(item.id || item.Id);
           const name = item.properties?.Name || item.properties?.Title || item.name || item.Name || '';
           if (id === String(excludeId) || seen.has(id)) continue;
@@ -331,26 +330,18 @@ async function searchRelatedAssets(pdfContent, token, excludeId, instance) {
           const confidence = scoreMatch(searchTerm, item);
           if (confidence >= CONFIDENCE_MIN) matched.push({ id, name, confidence, matchedKeyword: searchTerm });
         }
-        if (resp.data?.items?.length || resp.data?.results?.length) found = true;
+        found = true;
       } catch (err) {
-        console.log(`[Search] GET /api/search "${searchTerm}": ${err.message}`);
+        console.log(`[Search] GET /api/search "${sanitized}": ${err.message}`);
       }
     }
 
-    // Strategy 3 — GET /api/entities with OData filter
+    // Strategy 3 — GET /api/entities?query=
     if (!found) {
       try {
         const resp = await axios.get(
           `https://${instance}/api/entities`,
-          {
-            params: {
-              query: `entitydefinition:M.Asset AND name contains '${sanitized}'`,
-              limit: 5,
-              select: 'id,name,description,tags,Title',
-            },
-            headers: chHeaders(token),
-            timeout: 10000,
-          },
+          { params: { query: `name contains '${sanitized}'`, limit: 5 }, headers: chHeaders(token), timeout: 10000 },
         );
         for (const item of resp.data?.items || []) {
           const id = String(item.id);
@@ -360,8 +351,9 @@ async function searchRelatedAssets(pdfContent, token, excludeId, instance) {
           const confidence = scoreMatch(searchTerm, item);
           if (confidence >= CONFIDENCE_MIN) matched.push({ id, name, confidence, matchedKeyword: searchTerm });
         }
+        found = true;
       } catch (err) {
-        console.log(`[Search] GET /api/entities "${searchTerm}": ${err.message}`);
+        console.log(`[Search] GET /api/entities?query= "${sanitized}": ${err.message}`);
       }
     }
   }
