@@ -1,113 +1,43 @@
+import { PDFParse } from 'pdf-parse';
 import axios from 'axios';
-import pdfParse from 'pdf-parse';
+import express from 'express';
 
-// Global cache for products (valid 1 hour)
-let productsCache = null;
-let productsCacheTime = 0;
-const CACHE_DURATION = 3600000;
+const app = express();
+app.use(express.json());
+
+// ═══════════════════════════════════════════════════
+// PDF → Related Assets Association
+// When a PDF is uploaded to Content Hub as an Asset,
+// this handler extracts its text and links it to other
+// related assets / products based on the content.
+// ═══════════════════════════════════════════════════
 
 const INSTANCE = process.env.CONTENT_HUB_INSTANCE || 'btr-q-001.sitecorecontenthub.cloud';
-const API_SECRET = process.env.CH_API_SECRET || 'ch_secret_2027';
+const API_SECRET = process.env.CH_API_SECRET || process.env.API_SECRET_KEY || 'ch_secret_2027';
+const CONFIDENCE_MIN = parseFloat(process.env.ASSOCIATION_CONFIDENCE_THRESHOLD || '0.5');
+const RELATION_TYPE = process.env.PDF_RELATION_TYPE || 'RelatedAssets';
 
-export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+// Auth cache
+let authToken = null;
+let authTime = 0;
+const AUTH_TTL = 55 * 60 * 1000; // 55 min
 
-  if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+// ── Common stop words ──
+const STOP_WORDS = new Set([
+  'this','that','with','from','have','been','will','their','what','when',
+  'which','about','also','into','than','then','them','only','other','more',
+  'such','each','would','could','should','after','before','between','where',
+  'there','these','those','upon','while','until','because','without','just',
+  'like','some','they','very','over','your','most','every',
+]);
 
-  // ✅ Validate x-api-key header
-  const apiKey = req.headers['x-api-key'];
-  if (apiKey !== API_SECRET) {
-    console.warn('[PDF Association] Unauthorized - invalid API key:', apiKey);
-    return res.status(401).json({ success: false, error: 'Unauthorized' });
-  }
-
-  try {
-    console.log('[PDF Association] Request received');
-    console.log('[PDF Association] Body:', JSON.stringify(req.body));
-
-    const { entityId, fileName, instanceUrl } = req.body;
-
-    if (!entityId) {
-      console.warn('[PDF Association] No entityId provided');
-      return res.status(200).json({ success: false, error: 'No entityId provided' });
-    }
-
-    const actualFileName = fileName || 'unknown.pdf';
-    const instance = instanceUrl || INSTANCE;
-
-    // Step 1: Get auth token using client credentials
-    console.log('[PDF Association] Getting auth token');
-    const token = await getAuthToken(instance);
-
-    // Step 2: Download PDF from Content Hub
-    console.log(`[PDF Association] Downloading PDF for asset: ${entityId}`);
-    const pdfBuffer = await downloadPDFFromContentHub(entityId, token, instance);
-
-    // Step 3: Extract text and metadata
-    console.log('[PDF Association] Extracting PDF content');
-    const pdfContent = await extractPDFContent(pdfBuffer, actualFileName);
-
-    // Step 4: Get products
-    console.log('[PDF Association] Fetching products');
-    const products = await getProductsWithCache(token, instance);
-
-    // Step 5: AI-powered matching
-    console.log('[PDF Association] Running AI matching');
-    const matches = await matchPDFToProducts(pdfContent, products);
-
-    // Step 6: Create relations in Content Hub
-    if (matches.length > 0) {
-      console.log(`[PDF Association] Creating ${matches.length} relations`);
-      await createProductRelations(entityId, matches, token, instance);
-    }
-
-    // Step 7: Update asset metadata
-    console.log('[PDF Association] Updating asset metadata');
-    await updateAssetMetadata(
-      entityId,
-      {
-        'AssociatedProductCount': matches.length,
-        'AIConfidenceScore': matches.length > 0 ? matches[0].confidence : 0,
-        'LastAssociated': new Date().toISOString()
-      },
-      token,
-      instance
-    );
-
-    console.log(`[PDF Association] Success: ${matches.length} products matched`);
-
-    return res.status(200).json({
-      success: true,
-      assetId: entityId,
-      fileName: actualFileName,
-      matchCount: matches.length,
-      matches: matches.map(m => ({
-        productId: m.productId,
-        productName: m.productName,
-        confidence: m.confidence,
-        reason: m.reason
-      }))
-    });
-
-  } catch (error) {
-    console.error('[PDF Association] Error:', error.message);
-    // Always return 200 so Content Hub doesn't mark the action as failed
-    return res.status(200).json({
-      success: false,
-      error: error.message,
-      fallbackAction: 'manual_review_required'
-    });
-  }
-}
-
-// ============= AUTH =============
+// ==================== AUTH ====================
 
 async function getAuthToken(instance) {
+  const now = Date.now();
+  if (authToken && (now - authTime) < AUTH_TTL) return authToken;
+
   try {
-    // Try OAuth client credentials first
     const response = await axios.post(
       `https://${instance}/oauth/token`,
       new URLSearchParams({
@@ -121,29 +51,39 @@ async function getAuthToken(instance) {
       }
     );
     console.log('[Auth] Got OAuth token');
-    return response.data.access_token;
+    authToken = response.data.access_token;
+    authTime = now;
+    return authToken;
   } catch (oauthError) {
     console.warn('[Auth] OAuth failed, trying username/password:', oauthError.message);
 
-    // Fallback: username/password auth
     const response = await axios.post(
       `https://${instance}/api/authenticate`,
       {
-        user_name: process.env.CH_USERNAME,
-        password: process.env.CH_PASSWORD,
-        disableHtmlEncoding: true
+        user_name: process.env.CH_USERNAME || process.env.CONTENT_HUB_USERNAME,
+        password: process.env.CH_PASSWORD || process.env.CONTENT_HUB_PASSWORD,
       },
       { timeout: 10000 }
     );
     console.log('[Auth] Got username/password token');
-    return response.data.token;
+    authToken = response.data.token;
+    authTime = now;
+    return authToken;
   }
 }
 
-// ============= PDF DOWNLOAD =============
+/** Auth headers for Content Hub API calls */
+function chHeaders(token) {
+  return {
+    'X-Auth-Token': token,
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+  };
+}
 
-async function downloadPDFFromContentHub(assetId, token, instance) {
-  // First get the asset details to find the download URL
+// ==================== PDF DOWNLOAD ====================
+
+async function downloadPDF(assetId, token, instance) {
   const assetRes = await axios.get(
     `https://${instance}/api/v2/entities/${assetId}`,
     {
@@ -153,9 +93,6 @@ async function downloadPDFFromContentHub(assetId, token, instance) {
   );
 
   const asset = assetRes.data;
-  console.log('[Download] Asset fetched, looking for file URL');
-
-  // Try renditions first
   const renditions = asset?.renditions;
   let downloadUrl = null;
 
@@ -164,237 +101,317 @@ async function downloadPDFFromContentHub(assetId, token, instance) {
   } else if (renditions?.original?.[0]?.href) {
     downloadUrl = renditions.original[0].href;
   } else {
-    // Fallback: try the file endpoint directly
     downloadUrl = `https://${instance}/api/v2/entities/${assetId}/file`;
   }
 
   console.log('[Download] Downloading from:', downloadUrl);
-
   const fileRes = await axios.get(downloadUrl, {
     responseType: 'arraybuffer',
     headers: { 'Authorization': `Bearer ${token}` },
-    timeout: 30000
+    timeout: 30000,
+    validateStatus: s => (s >= 200 && s < 300) || s === 404,
   });
 
+  if (fileRes.status === 404) throw new Error(`File not found for asset #${assetId}`);
   return Buffer.from(fileRes.data);
 }
 
-// ============= PDF PARSING =============
+// ==================== PDF PARSING (pdf-parse v3) ====================
 
-async function extractPDFContent(pdfBuffer, fileName) {
+async function extractPDFContent(pdfBuffer) {
+  const parser = new PDFParse({ data: pdfBuffer });
+
+  let textResult, infoResult;
   try {
-    const pdf = await pdfParse(pdfBuffer);
-    const text = pdf.text.substring(0, 3000);
-
-    // Extract HIM-XXXX product codes
-    const productNumberRegex = /HIM-\d{4}/g;
-    const foundProductNumbers = text.match(productNumberRegex) || [];
-    const keywords = extractKeywords(text);
-
-    return {
-      fileName,
-      text,
-      pages: pdf.numpages,
-      productNumbers: [...new Set(foundProductNumbers)],
-      keywords,
-      metadata: {
-        title: pdf.info?.Title || '',
-        author: pdf.info?.Author || '',
-        subject: pdf.info?.Subject || ''
-      }
-    };
-  } catch (error) {
-    throw new Error(`Failed to parse PDF: ${error.message}`);
+    [textResult, infoResult] = await Promise.all([
+      parser.getText(),
+      parser.getInfo(),
+    ]);
+  } finally {
+    await parser.destroy().catch(() => {});
   }
-}
 
-function extractKeywords(text) {
-  const words = text
+  const fullText = textResult?.text || '';
+  const text = fullText.substring(0, 3000);
+
+  // Extract product numbers (HIM-XXXX format)
+  const productNumberRegex = /[A-Z]{2,4}-\d{3,6}/g;
+  const foundProductNumbers = text.match(productNumberRegex) || [];
+
+  // Extract keywords by frequency
+  const rawWords = text
     .toLowerCase()
-    .split(/[\s\n,\.;:!?()]+/)
-    .filter(w => w.length > 4 && w.length < 30)
-    .filter(w => !/^[\d\-_]+$/.test(w))
+    .split(/[\s\n\r,\.\;:!?()"'\-\–—/\\|@#$%^&*+=<>[\]{}~`]+/)
+    .filter(w => w.length >= 4 && w.length <= 50)
+    .filter(w => !/^\d[\d\-_\s]*$/.test(w))
+    .filter(w => !STOP_WORDS.has(w));
+
+  const freq = {};
+  rawWords.forEach(w => { freq[w] = (freq[w] || 0) + 1; });
+  const keywords = [...new Set(rawWords)]
+    .sort((a, b) => (freq[b] - freq[a]) || a.localeCompare(b))
     .slice(0, 25);
-  return [...new Set(words)];
+
+  console.log(`[PDF] Extracted ${text.length} chars, ${keywords.length} keywords`);
+
+  return {
+    text,
+    pages: textResult?.total || 0,
+    productNumbers: [...new Set(foundProductNumbers)],
+    keywords,
+    metadata: {
+      title: infoResult?.info?.Title || '',
+      author: infoResult?.info?.Author || '',
+      subject: infoResult?.info?.Subject || '',
+    },
+  };
 }
 
-// ============= PRODUCTS =============
+// ==================== SEARCH RELATED ASSETS ====================
 
-async function getProductsWithCache(token, instance) {
-  const now = Date.now();
-  if (productsCache && (now - productsCacheTime) < CACHE_DURATION) {
-    console.log('[Cache] Using cached products');
-    return productsCache;
-  }
+async function searchRelatedAssets(pdfContent, token, excludeId, instance) {
+  const { keywords } = pdfContent;
+  if (!keywords || keywords.length === 0) return [];
 
-  console.log('[Cache] Fetching fresh products');
-  const response = await axios.get(
-    `https://${instance}/api/v2/entities`,
-    {
-      params: {
-        query: 'definition.name==\'M.Product\'',
-        take: 1000,
-        skip: 0
-      },
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      timeout: 15000
-    }
-  );
+  const matched = [];
+  const seen = new Set();
+  const topKw = keywords.slice(0, 12);
 
-  const items = response.data?.items || [];
-  const products = items.map(item => {
-    const nameProperty = item.properties?.find(p => p.name === 'ProductName' || p.name === 'Name');
-    return {
-      id: item.id,
-      name: nameProperty?.value || item.identifier || 'Unknown',
-      entityId: item.id
-    };
-  });
-
-  productsCache = products;
-  productsCacheTime = now;
-  console.log(`[Cache] Cached ${products.length} products`);
-  return products;
-}
-
-// ============= AI MATCHING =============
-
-async function matchPDFToProducts(pdfContent, products) {
-  // Strategy 1: Direct product code match
-  if (pdfContent.productNumbers.length > 0) {
-    const directMatches = products.filter(p =>
-      pdfContent.productNumbers.some(num => p.name?.includes(num) || String(p.id) === num)
-    );
-    if (directMatches.length > 0) {
-      console.log(`[Matching] ${directMatches.length} direct matches`);
-      return directMatches.map(m => ({
-        productId: m.id,
-        productName: m.name,
-        confidence: 0.99,
-        reason: `Product code found in PDF: ${pdfContent.productNumbers.join(', ')}`
-      }));
-    }
-  }
-
-  // Strategy 2: OpenAI semantic matching
-  if (!process.env.OPENAI_API_KEY) {
-    console.warn('[Matching] No OpenAI key, skipping AI match');
-    return [];
-  }
-
-  console.log('[Matching] Using OpenAI for semantic matching');
-  const productList = products.slice(0, 200).map((p, i) => `${i + 1}. ID:${p.id} Name:${p.name}`).join('\n');
-
-  const prompt = `You are a product catalog expert for Himalaya Wellness. Match this PDF to products.
-
-PDF File: "${pdfContent.fileName}"
-PDF Text (first 3000 chars):
-${pdfContent.text}
-
-Keywords: ${pdfContent.keywords.join(', ')}
-
-Products:
-${productList}
-
-Return ONLY a JSON array, no markdown. Only include matches with confidence > 0.7.
-Format: [{"productId": 123, "confidence": 0.95, "reason": "reason"}]`;
-
-  try {
-    const response = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: 'gpt-4-turbo-preview',
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.2,
-        max_tokens: 800
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json'
+  for (const keyword of topKw) {
+    try {
+      const resp = await axios.get(
+        `https://${instance}/api/v2/entities`,
+        {
+          params: {
+            query: `entitydefinition:M.Asset AND name:"*${keyword.replace(/[\\"*()]/g, '')}*"`,
+            limit: 5,
+            select: 'id,name,description,tags,Title',
+          },
+          headers: chHeaders(token),
+          timeout: 10000,
         },
-        timeout: 20000
+      );
+
+      for (const item of resp.data?.items || []) {
+        const id = String(item.id);
+        const name = item.properties?.Name || item.properties?.Title || item.name || '';
+        if (id === String(excludeId) || seen.has(id)) continue;
+        seen.add(id);
+
+        const confidence = scoreMatch(keyword, item);
+        if (confidence >= CONFIDENCE_MIN) {
+          matched.push({ id, name, confidence, matchedKeyword: keyword });
+        }
       }
-    );
-
-    let content = response.data.choices[0].message.content.trim();
-    content = content.replace(/```json|```/g, '').trim();
-    const matches = JSON.parse(content);
-
-    return matches.map(m => ({
-      ...m,
-      productName: products.find(p => p.id == m.productId)?.name || 'Unknown Product'
-    }));
-  } catch (error) {
-    console.error('[OpenAI Error]:', error.message);
-    return [];
+    } catch (err) {
+      console.warn(`[Search] "${keyword}": ${err.message}`);
+    }
   }
+
+  // Deduplicate by id, keep highest confidence
+  const best = new Map();
+  for (const m of matched) {
+    const prev = best.get(m.id);
+    if (!prev || m.confidence > prev.confidence) best.set(m.id, m);
+  }
+
+  return [...best.values()]
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 15);
 }
 
-// ============= RELATIONS =============
+function scoreMatch(keyword, item) {
+  const props = item.properties || {};
+  const name = (props.Name || props.Title || '').toLowerCase();
+  const desc = (props.Description || '').toLowerCase();
+  const tags = Array.isArray(props.Tags) ? props.Tags.map(t => String(t).toLowerCase()) : [];
 
-async function createProductRelations(assetId, matches, token, instance) {
-  for (const match of matches) {
+  let score = 0;
+  if (name === keyword) score = 0.95;
+  else if (name.startsWith(keyword)) score = 0.80;
+  else if (name.includes(keyword)) score = 0.65;
+
+  if (desc.includes(keyword)) score = Math.max(score, score > 0 ? 0.50 : 0.50);
+  if (tags.some(t => t.includes(keyword))) score = Math.max(score, score > 0 ? 0.45 : 0.45);
+
+  const hits = name.split(/[\s_-]+/).filter(w => keyword.includes(w) && w.length > 2).length;
+  if (hits >= 2 && score > 0) score += 0.05;
+
+  return Math.min(score, 0.99);
+}
+
+// ==================== RELATIONS ====================
+
+async function createRelatedAssetRelations(assetId, matches, token, instance) {
+  for (const asset of matches) {
+    let ok = false;
+
+    // Strategy 1 — v2 relations endpoint
     try {
       await axios.post(
-        `https://${instance}/api/v2/entities/${match.productId}/relations/ProductToAsset`,
-        {
-          parent: { id: match.productId },
-          child: { id: assetId }
-        },
-        {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          timeout: 8000
-        }
+        `https://${instance}/api/v2/relations`,
+        { relationType: RELATION_TYPE, source: String(assetId), target: String(asset.id), sourceType: 'M.Asset', targetType: 'M.Asset' },
+        { headers: chHeaders(token), timeout: 10000 },
       );
-      console.log(`[Relation] Created: Product ${match.productId} → Asset ${assetId}`);
-    } catch (err) {
-      console.warn(`[Relation] Failed for ${match.productId}:`, err.message);
+      ok = true;
+    } catch { /* fall through */ }
+
+    // Strategy 2 — entity relations endpoint
+    if (!ok) {
+      try {
+        await axios.post(
+          `https://${instance}/api/v2/entities/${assetId}/relations`,
+          { relationType: RELATION_TYPE, relatedEntityId: String(asset.id), targetEntityType: 'M.Asset' },
+          { headers: chHeaders(token), timeout: 10000 },
+        );
+        ok = true;
+      } catch { /* fall through */ }
     }
+
+    // Strategy 3 — legacy
+    if (!ok) {
+      try {
+        await axios.post(
+          `https://${instance}/api/entities/${assetId}/relations/${RELATION_TYPE}`,
+          { id: String(asset.id) },
+          { headers: chHeaders(token), timeout: 10000 },
+        );
+        ok = true;
+      } catch { /* fall through */ }
+    }
+
+    console.log(ok
+      ? `[Relation] ✅ #${assetId} → #${asset.id} (${asset.name})`
+      : `[Relation] ⚠️ Failed: #${assetId} → #${asset.id}`);
   }
 }
 
-// ============= METADATA =============
+// ==================== METADATA ====================
 
 async function updateAssetMetadata(assetId, metadata, token, instance) {
   try {
-    // Get current entity first to get culture info
     const entityRes = await axios.get(
       `https://${instance}/api/v2/entities/${assetId}`,
       { headers: { 'Authorization': `Bearer ${token}` }, timeout: 8000 }
     );
 
     const properties = entityRes.data.properties || [];
-
-    // Merge new metadata
     Object.entries(metadata).forEach(([key, value]) => {
       const existing = properties.find(p => p.name === key);
-      if (existing) {
-        existing.value = value;
-      } else {
-        properties.push({ name: key, value });
-      }
+      if (existing) existing.value = value;
+      else properties.push({ name: key, value });
     });
 
     await axios.put(
       `https://${instance}/api/v2/entities/${assetId}`,
       { properties },
-      {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 8000
-      }
+      { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 8000 }
     );
-    console.log(`[Metadata] Updated for ${assetId}`);
+    console.log(`[Metadata] Updated for #${assetId}`);
   } catch (err) {
     console.warn('[Metadata] Failed:', err.message);
   }
 }
+
+// ==================== MAIN HANDLER ====================
+
+app.post('/api/pdf/associate', async (req, res) => {
+  const start = Date.now();
+  console.log('══════════════════════════════════════════════');
+  console.log('[Handler] POST /api/pdf/associate called');
+
+  // Security check
+  const apiKey = req.headers['x-api-key'];
+  if (apiKey !== API_SECRET) {
+    console.warn('[Handler] Unauthorized — invalid x-api-key');
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
+  try {
+    console.log('[Handler] Body:', JSON.stringify(req.body));
+
+    const { entityId, fileName, instanceUrl, entity } = req.body || {};
+    const pdfAssetId = entityId || entity?.id;
+    const pdfFilename = fileName || entity?.properties?.FileName || 'unknown.pdf';
+    const instance = instanceUrl || INSTANCE;
+
+    if (!pdfAssetId) {
+      return res.status(200).json({ success: false, error: 'No entityId provided' });
+    }
+
+    console.log(`[Handler] Asset #${pdfAssetId}, File: ${pdfFilename}, Instance: ${instance}`);
+
+    // Step 1: Auth
+    const token = await getAuthToken(instance);
+
+    // Step 2: Download PDF
+    const pdfBuffer = await downloadPDF(pdfAssetId, token, instance);
+
+    // Step 3: Extract text
+    const pdfContent = await extractPDFContent(pdfBuffer);
+
+    if (!pdfContent.text || pdfContent.text.length < 15) {
+      console.log('[Handler] Insufficient text, skipping');
+      await updateAssetMetadata(pdfAssetId, {
+        'PDF Association Status': 'Skipped — insufficient text',
+        'PDF Association Date': new Date().toISOString(),
+      }, token, instance);
+
+      return res.json({
+        success: true,
+        assetId: pdfAssetId,
+        message: 'Insufficient text in PDF',
+        matches: 0,
+      });
+    }
+
+    // Step 4: Search for related assets
+    const matches = await searchRelatedAssets(pdfContent, token, pdfAssetId, instance);
+    console.log(`[Handler] Found ${matches.length} related assets`);
+
+    // Step 5: Create relations
+    if (matches.length > 0) {
+      await createRelatedAssetRelations(pdfAssetId, matches, token, instance);
+    }
+
+    // Step 6: Update metadata
+    const meta = {
+      'PDF Association Status': matches.length > 0 ? 'Completed' : 'No Matches Found',
+      'PDF Association Count': String(matches.length),
+      'PDF Association Date': new Date().toISOString(),
+    };
+    if (matches.length > 0) {
+      meta['PDF Top Match'] = matches[0].name;
+      meta['PDF Top Confidence'] = String(matches[0].confidence.toFixed(2));
+    }
+    await updateAssetMetadata(pdfAssetId, meta, token, instance);
+
+    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+    console.log(`[Handler] Done in ${elapsed}s — ${matches.length} matches`);
+    console.log('══════════════════════════════════════════════');
+
+    return res.json({
+      success: true,
+      assetId: pdfAssetId,
+      fileName: pdfFilename,
+      matchesFound: matches.length,
+      matches: matches.map(m => ({
+        assetId: m.id,
+        assetName: m.name,
+        confidence: +m.confidence.toFixed(2),
+      })),
+    });
+
+  } catch (error) {
+    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+    console.error(`[Handler] Error after ${elapsed}s:`, error.message);
+
+    return res.json({
+      success: false,
+      error: error.message,
+      fallbackAction: 'manual_review_required',
+    });
+  }
+});
+
+export default app;
