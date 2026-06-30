@@ -398,72 +398,89 @@ function scoreMatch(keyword, item) {
 // ==================== RELATIONS ====================
 
 async function createRelatedAssetRelations(assetId, matches, token, instance) {
-  // Use the dedicated /api/entities/{assetId}/relations endpoint
-  // This endpoint handles only relation data, not full entity
-  
+  // RelatedAsset is ManyToMany on M.Asset (Parent role on the PDF side).
+  // Write matched product IDs into the PDF's own RelatedAsset field.
+  // Pattern: GET PDF entity → merge product IDs into RelatedAsset array → PUT back
   try {
     console.log(`[Relation] Linking PDF #${assetId} to ${matches.length} product(s)...`);
 
-    // Build the relation payload
-    // Format: { "RelationName": [{ "id": id1 }, { "id": id2 }, ...] }
-    const relationPayload = {
-      [RELATION_TYPE]: matches.map(m => ({ id: Number(m.id) }))
+    // 1. GET the PDF asset's current state (full entity)
+    const getRes = await axios.get(
+      `https://${instance}/api/entities/${assetId}`,
+      { headers: chHeaders(token), timeout: 10000 }
+    );
+    const pdfEntity = getRes.data;
+    const entityDef = typeof pdfEntity.entitydefinition === 'object'
+      ? (pdfEntity.entitydefinition?.Name || 'M.Asset')
+      : (pdfEntity.entitydefinition || 'M.Asset');
+
+    // 2. Get existing RelatedAsset relations on the PDF
+    const existingRelations = pdfEntity.relations || {};
+    let relatedAssets = existingRelations[RELATION_TYPE] || [];
+
+    // Normalise to array
+    if (!Array.isArray(relatedAssets)) {
+      relatedAssets = relatedAssets.items || relatedAssets.results || [];
+    }
+    if (!Array.isArray(relatedAssets)) relatedAssets = [];
+
+    // 3. Merge new product IDs, skip duplicates
+    const added = [];
+    for (const asset of matches) {
+      const targetId = Number(asset.id);
+      const alreadyLinked = relatedAssets.some(r => Number(r.id) === targetId);
+      if (alreadyLinked) {
+        console.log(`[Relation] Already linked: #${targetId} (${asset.name})`);
+      } else {
+        relatedAssets.push({ id: targetId });
+        added.push(asset);
+      }
+    }
+
+    if (added.length === 0) {
+      console.log(`[Relation] ✅ All ${matches.length} match(es) already linked`);
+      return;
+    }
+
+    // 4. PUT the PDF asset with merged relations + existing properties
+    existingRelations[RELATION_TYPE] = relatedAssets;
+    const putBody = {
+      entitydefinition: entityDef,
+      properties: pdfEntity.properties || {},
+      relations: existingRelations,
     };
+    console.log(`[Relation] PUT #${assetId} body: ${JSON.stringify({ ...putBody, properties: '...(preserved)' }).substring(0, 500)}`);
 
-    console.log(`[Relation] Payload to send: ${JSON.stringify(relationPayload)}`);
-
-    // PUT to the dedicated relations endpoint
     const putRes = await axios.put(
-      `https://${instance}/api/entities/${assetId}/relations`,
-      relationPayload,
+      `https://${instance}/api/entities/${assetId}`,
+      putBody,
       { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
     );
 
-    console.log(`[Relation] PUT /relations response: status=${putRes.status}`);
-    if (putRes.data && Object.keys(putRes.data).length > 0) {
-      console.log(`[Relation] Response data: ${JSON.stringify(putRes.data).substring(0, 300)}`);
-    }
+    console.log(`[Relation] PUT response: status=${putRes.status}, data=${JSON.stringify(putRes.data || '').substring(0, 300)}`);
 
-    if (putRes.status === 200 || putRes.status === 204) {
-      console.log(`[Relation] ✅ SUCCESS: #${assetId} linked to ${matches.length} product(s)`);
-      matches.forEach(m => {
-        console.log(`  ✅ #${assetId} → #${m.id} (${m.name})`);
-      });
+    if (putRes.status === 200) {
+      console.log(`[Relation] ✅ #${assetId} ← ${added.length} product(s): ${added.map(a => `#${a.id} (${a.name})`).join(', ')}`);
     } else if (putRes.status === 400) {
-      console.log(`[Relation] ⚠️ 400 Bad Request — trying alternative payload format...`);
-
-      // Try alternative format: single object if only 1, or send without array wrapper
-      const altPayload = {};
-      if (matches.length === 1) {
-        altPayload[RELATION_TYPE] = { id: Number(matches[0].id) };
-      } else {
-        // Try with add/remove structure like the docs mention
-        altPayload[RELATION_TYPE] = { 
-          add: matches.map(m => ({ id: Number(m.id) }))
-        };
-      }
-      console.log(`[Relation] Alternative payload: ${JSON.stringify(altPayload)}`);
-
-      const altRes = await axios.put(
-        `https://${instance}/api/entities/${assetId}/relations`,
-        altPayload,
+      // Fallback: try PATCH with just entitydefinition + relations
+      console.log(`[Relation] PUT 400, trying PATCH fallback...`);
+      const patchRes = await axios.patch(
+        `https://${instance}/api/entities/${assetId}`,
+        { entitydefinition: entityDef, relations: existingRelations },
         { headers: chHeaders(token), timeout: 15000, validateStatus: s => true }
       );
-
-      console.log(`[Relation] Alternative PUT response: status=${altRes.status}`);
-      if (altRes.status === 200 || altRes.status === 204) {
-        console.log(`[Relation] ✅ SUCCESS via alternative format`);
+      console.log(`[Relation] PATCH response: status=${patchRes.status}, data=${JSON.stringify(patchRes.data || '').substring(0, 300)}`);
+      if (patchRes.status === 200) {
+        console.log(`[Relation] ✅ #${assetId} ← ${added.length} product(s) via PATCH`);
       } else {
-        console.log(`[Relation] ⚠️ Alternative also failed: status=${altRes.status}`);
+        console.log(`[Relation] ⚠️ Failed: PUT ${putRes.status} / PATCH ${patchRes.status}`);
       }
     } else {
-      console.log(`[Relation] ⚠️ Unexpected status ${putRes.status} linking #${assetId}`);
+      console.log(`[Relation] ⚠️ Unexpected status ${putRes.status}`);
     }
   } catch (err) {
-    console.log(`[Relation] ❌ Exception: ${err.message}`);
-    if (err.response?.data) {
-      console.log(`[Relation] Error response: ${JSON.stringify(err.response.data).substring(0, 300)}`);
-    }
+    console.log(`[Relation] ❌ Error: ${err.message}`);
+    if (err.response?.data) console.log(`[Relation] Response: ${JSON.stringify(err.response.data).substring(0, 300)}`);
   }
 }
 
@@ -527,7 +544,7 @@ app.post('/api/pdf/associate', async (req, res) => {
     const saveMsg = req.body?.saveEntityMessage;
     const pdfAssetId = saveMsg?.TargetId;
     const fileNameChange = saveMsg?.ChangeSet?.PropertyChanges?.find(p => p.Property === 'FileName');
-    const pdfFilename = fileNameChange?.NewValue || 'unknown.pdf'; 
+    const pdfFilename = fileNameChange?.NewValue || 'unknown.pdf';
     const instance = req.body?.instanceUrl || INSTANCE;
 
     if (!pdfAssetId) {
