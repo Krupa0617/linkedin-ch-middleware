@@ -102,25 +102,42 @@ async function downloadPDF(assetId, token, instance) {
 
   const asset = assetRes.data;
 
-  // Collect all possible download URLs from renditions / blob / entity structure
+  // Debug: log entity structure
+  console.log('[Download] Entity keys:', Object.keys(asset));
+  console.log('[Download] Entity properties:', JSON.stringify(asset.properties || asset.property || 'none').substring(0, 500));
+
+  // Collect all possible download URLs
   const urlsToTry = [];
 
-  // Strategy 1 — renditions from entity response
-  const renditions = asset?.renditions;
-  if (renditions?.download?.[0]?.href) {
-    urlsToTry.push(renditions.download[0].href);
-  }
-  if (renditions?.original?.[0]?.href) {
-    urlsToTry.push(renditions.original[0].href);
-  }
-
-  // Strategy 2 — Blob property from entity
-  const blobId = asset?.properties?.Blob || asset?.Blob;
-  if (blobId) {
-    urlsToTry.push(`https://${instance}/api/blobs/${blobId}/download`);
+  // Strategy 1 — renditions from entity response (top-level or nested)
+  const renditions = asset?.renditions || asset?.Renditions;
+  if (renditions?.download?.[0]?.href) urlsToTry.push(renditions.download[0].href);
+  if (renditions?.original?.[0]?.href) urlsToTry.push(renditions.original[0].href);
+  // Some Content Hub versions nest under 'items'
+  if (renditions?.items) {
+    for (const item of renditions.items) {
+      if (item.href) urlsToTry.push(item.href);
+    }
   }
 
-  // Strategy 3 — common Content Hub download endpoints
+  // Strategy 2 — look for resource/blob links in entity body
+  const resourceLink = asset?.Resource || asset?.resource;
+  if (typeof resourceLink === 'string') urlsToTry.push(resourceLink);
+
+  // Strategy 3 — find delivery URL from entity properties
+  const props = asset?.properties || asset?.Properties || {};
+  const propArray = Array.isArray(props) ? props : Object.entries(props).map(([k, v]) => ({ name: k, value: v }));
+  for (const p of propArray) {
+    const val = p.value || p.Value;
+    if (typeof val === 'string' && val.includes('/api/delivery/')) {
+      urlsToTry.push(val);
+    }
+  }
+
+  // Strategy 4 — try renditions API
+  urlsToTry.push(`https://${instance}/api/entities/${assetId}/renditions`);
+
+  // Strategy 5 — common Content Hub download endpoints
   urlsToTry.push(
     `https://${instance}/api/entities/${assetId}/file`,
     `https://${instance}/api/entities/${assetId}/download`,
