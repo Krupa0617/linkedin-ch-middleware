@@ -402,7 +402,6 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
     let ok = false;
 
     // Strategy 1 — Update the RelatedAssets property on the MATCHED asset to include the PDF asset
-    // The user wants the matched asset's "RelatedAssets" field to reference the uploaded PDF
     try {
       const entityRes = await axios.get(
         `https://${instance}/api/entities/${asset.id}`,
@@ -410,40 +409,46 @@ async function createRelatedAssetRelations(assetId, matches, token, instance) {
       );
 
       const currentProps = entityRes.data.properties || {};
+      const currentRelations = entityRes.data.relations || {};
       const existing = currentProps['RelatedAssets'] || currentProps['Asset.RelatedAssets'] || [];
 
       // Add the PDF asset ID if not already present
-      const relatedIds = Array.isArray(existing) ? [...existing] : [];
+      const relatedIds = Array.isArray(existing) ? [...existing] : [existing].filter(Boolean);
       if (!relatedIds.includes(assetId)) {
         relatedIds.push(assetId);
       }
 
-      // Try updating with both possible field names
       const updateProps = {
         ...currentProps,
         'RelatedAssets': relatedIds,
         'Asset.RelatedAssets': relatedIds,
       };
 
+      // Try PUT with properties + relations included
       try {
         await axios.put(
           `https://${instance}/api/entities/${asset.id}`,
-          { properties: updateProps },
+          {
+            properties: updateProps,
+            relations: { ...currentRelations, 'RelatedAssets': relatedIds },
+          },
           { headers: chHeaders(token), timeout: 8000 }
         );
-        console.log(`[Relation] ✅ #${asset.id} RelatedAssets updated via PUT (${relatedIds.length} items)`);
+        console.log(`[Relation] ✅ #${asset.id} updated via PUT with relations (${relatedIds.length} items)`);
         ok = true;
       } catch (putErr) {
-        // Fall back to PATCH
+        // Try PATCH on properties only
         try {
           await axios.patch(
             `https://${instance}/api/entities/${asset.id}`,
             { properties: { 'RelatedAssets': relatedIds, 'Asset.RelatedAssets': relatedIds } },
             { headers: chHeaders(token), timeout: 8000 }
           );
-          console.log(`[Relation] ✅ #${asset.id} RelatedAssets updated via PATCH`);
+          console.log(`[Relation] ✅ #${asset.id} updated via PATCH`);
           ok = true;
-        } catch { /* fall through to strategy 2 */ }
+        } catch (patchErr) {
+          console.log(`[Relation] PUT/PATCH on #${asset.id}: PUT ${putErr.response?.status || putErr.message}, PATCH ${patchErr.response?.status || patchErr.message}`);
+        }
       }
     } catch (err) {
       console.log(`[Relation] Read entity #${asset.id}: ${err.message}`);
