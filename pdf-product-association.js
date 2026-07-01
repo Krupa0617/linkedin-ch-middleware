@@ -322,7 +322,7 @@ async function searchRelatedAssets(pdfContent, token, excludeId, instance, pdfFi
       try {
         const resp = await axios.get(
           `https://${instance}/api/search`,
-          { params: { fulltext: sanitized, entitydefinition: 'M.Asset', take: 50 }, headers: chHeaders(token), timeout: 10000 },
+          { params: { fulltext: sanitized, entitydefinition: 'M.Asset', take: 500 }, headers: chHeaders(token), timeout: 10000 },
         );
         const items = resp.data?.items || resp.data?.results || resp.data?.data || [];
         console.log(`[Search] fulltext="${sanitized}" -> ${items.length} items of ${resp.data?.totalItemCount || 0} total`);
@@ -345,7 +345,7 @@ async function searchRelatedAssets(pdfContent, token, excludeId, instance, pdfFi
       try {
         const resp = await axios.get(
           `https://${instance}/api/search`,
-          { params: { q: sanitized, entitydefinition: 'M.Asset', take: 50 }, headers: chHeaders(token), timeout: 10000 },
+          { params: { q: sanitized, entitydefinition: 'M.Asset', take: 500 }, headers: chHeaders(token), timeout: 10000 },
         );
         const items = resp.data?.items || resp.data?.results || resp.data?.data || [];
         for (const item of items) {
