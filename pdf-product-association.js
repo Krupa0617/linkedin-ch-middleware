@@ -607,6 +607,10 @@ app.post('/api/pdf/associate', async (req, res) => {
   console.log('══════════════════════════════════════════════');
   console.log('[Handler] POST /api/pdf/associate called');
 
+  // Debug: inspect request headers
+  console.log("[Handler] Headers:", JSON.stringify(req.headers));
+  console.log("[Handler] API KEY:", req.headers["x-api-key"]);
+
   // Security check
   const apiKey = req.headers['x-api-key'];
   if (apiKey !== API_SECRET) {
