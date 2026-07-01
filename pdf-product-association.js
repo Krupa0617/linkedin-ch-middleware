@@ -89,170 +89,6 @@ function chHeaders(token) {
   return headers;
 }
 
-// ==================== ASSET ID EXTRACTION ====================
-/**
- * Extract Asset ID from various sources in the request.
- * Handles:
- * 1. Entity save webhook: saveEntityMessage.TargetId
- * 2. Flow action with properly bound ID: parameters.assetId (numeric)
- * 3. Flow action with template variable string: parameters.assetId = " \"{[Entity.Id]}\""
- * 4. Fallback: Search Content Hub for recently uploaded asset by filename
- */
-function extractAssetId(body) {
-  console.log('[AssetId] Extracting from request body...');
-  
-  // Strategy 1: Entity save webhook
-  const saveMsg = body?.saveEntityMessage;
-  if (saveMsg?.TargetId) {
-    const id = String(saveMsg.TargetId).trim();
-    console.log('[AssetId] ✅ Found in saveEntityMessage.TargetId:', id);
-    return id;
-  }
-
-  // Strategy 2: Direct parameter (properly bound)
-  const params = body?.parameters || {};
-  let rawAssetId = params.assetId;
-  
-  if (rawAssetId) {
-    // Handle quoted/escaped template variable: " \"{[Entity.Id]}\""
-    rawAssetId = String(rawAssetId).trim();
-    
-    // Remove quotes, escapes, and template syntax
-    let cleaned = rawAssetId
-      .replace(/^["']|["']$/g, '')           // Remove leading/trailing quotes
-      .replace(/^\{|\}$/g, '')               // Remove leading/trailing braces
-      .replace(/\\\"/g, '"')                 // Unescape quotes
-      .replace(/^\[|]$/g, '')                // Remove brackets
-      .replace(/^Entity\.|Entity\./g, '')    // Remove Entity. prefix
-      .trim();
-    
-    console.log('[AssetId] Raw params.assetId:', JSON.stringify(rawAssetId));
-    console.log('[AssetId] Cleaned:', cleaned);
-    
-    // If still has template syntax, it wasn't evaluated
-    if (cleaned.includes('[') || cleaned.includes('{') || cleaned.includes('Entity')) {
-      console.warn('[AssetId] ⚠️ Template variable NOT evaluated by Content Hub:', cleaned);
-      console.warn('[AssetId] Will fallback to searching by filename...');
-      // Return null to trigger fallback strategies
-      return null;
-    }
-    
-    // Ensure it's numeric
-    if (/^\d+$/.test(cleaned)) {
-      console.log('[AssetId] ✅ Found in parameters.assetId (cleaned):', cleaned);
-      return cleaned;
-    }
-  }
-
-  // Strategy 3: Check if callback URL contains entity context
-  const callback = body?.callback;
-  if (callback && typeof callback === 'string') {
-    // Try to extract entity ID from callback parameters
-    const match = callback.match(/[?&](?:entityId|id|eid)=(\d+)/i);
-    if (match) {
-      console.log('[AssetId] ✅ Found in callback URL:', match[1]);
-      return match[1];
-    }
-  }
-
-  // Strategy 4: Try sources metadata (blob URL might have ID)
-  const sources = body?.sources || [];
-  if (Array.isArray(sources) && sources.length > 0) {
-    const sourceUrl = sources[0];
-    const match = sourceUrl.match(/(?:asset|entity)?[_-]?(\d{8,})/i);
-    if (match) {
-      console.log('[AssetId] ⚠️ Extracting ID from source URL (unreliable):', match[1]);
-      return match[1];
-    }
-  }
-
-  // Return null to signal we need to search by filename
-  console.error('[AssetId] ❌ Could not extract Asset ID directly');
-  console.error('[AssetId] Will attempt to find asset by searching Content Hub...');
-  
-  return null;
-}
-
-/**
- * FALLBACK: Search Content Hub for the uploaded PDF by filename
- * Extracts filename from blob storage URL and searches for recently created matching asset
- */
-async function findAssetIdByFilename(body, token, instance) {
-  const sources = body?.sources || [];
-  if (!Array.isArray(sources) || sources.length === 0) {
-    console.log('[FindByFilename] No sources in request, cannot search');
-    return null;
-  }
-
-  // Extract filename from blob URL
-  // URL format: https://btrq001sstorsea.blob.core.windows.net/files/a49e84c95233442cb4c9da23c68df34a?sv=2019-07-07...
-  const sourceUrl = sources[0];
-  const urlParts = sourceUrl.split('/');
-  const fileHash = urlParts[urlParts.length - 1]?.split('?')[0];
-
-  if (!fileHash) {
-    console.log('[FindByFilename] Could not extract filename from source URL:', sourceUrl);
-    return null;
-  }
-
-  console.log('[FindByFilename] Searching Content Hub for recently uploaded asset with hash:', fileHash);
-
-  try {
-    // Search for assets created in the last 5 minutes (in case of clock skew)
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-    
-    // Try multiple search strategies
-    const searchQueries = [
-      { fulltext: fileHash, entitydefinition: 'M.Asset', take: 50 },
-      { q: fileHash, entitydefinition: 'M.Asset', take: 50 },
-      { fulltext: 'pdf', entitydefinition: 'M.Asset', take: 100 }, // Fallback: get all recent PDFs
-    ];
-
-    for (let i = 0; i < searchQueries.length; i++) {
-      const query = searchQueries[i];
-      try {
-        console.log(`[FindByFilename] Attempt ${i + 1} - searching with:`, query);
-        
-        const resp = await axios.get(
-          `https://${instance}/api/search`,
-          {
-            params: query,
-            headers: chHeaders(token),
-            timeout: 10000,
-          }
-        );
-
-        const items = resp.data?.items || resp.data?.results || resp.data?.data || [];
-        console.log(`[FindByFilename] Got ${items.length} results`);
-
-        if (items.length > 0) {
-          // Sort by creation date (most recent first) and take the first one
-          const sorted = items.sort((a, b) => {
-            const dateA = new Date(a.modified || a.created || 0);
-            const dateB = new Date(b.modified || b.created || 0);
-            return dateB - dateA;
-          });
-
-          const found = sorted[0];
-          const id = String(found.id || found.Id);
-          const name = found.properties?.Title || found.properties?.Name || found.name || 'Unknown';
-          
-          console.log(`[FindByFilename] ✅ Found asset #${id} (${name})`);
-          return id;
-        }
-      } catch (err) {
-        console.log(`[FindByFilename] Attempt ${i + 1} failed: ${err.message}`);
-      }
-    }
-
-    console.log('[FindByFilename] ❌ No matching asset found after all search attempts');
-    return null;
-  } catch (err) {
-    console.error('[FindByFilename] Error:', err.message);
-    return null;
-  }
-}
-
 // ==================== PDF DOWNLOAD ====================
 
 async function downloadPDF(assetId, token, instance) {
@@ -785,43 +621,26 @@ app.post('/api/pdf/associate', async (req, res) => {
   try {
     console.log('[Handler] Body:', JSON.stringify(req.body));
 
-    // Get instance first
+    // const { entityId, fileName, instanceUrl, entity } = req.body || {};
+    const saveMsg = req.body?.saveEntityMessage;
+    const pdfAssetId = saveMsg?.TargetId;
+    const fileNameChange = saveMsg?.ChangeSet?.PropertyChanges?.find(p => p.Property === 'FileName');
+    const pdfFilename = fileNameChange?.NewValue || 'unknown.pdf';
     const instance = req.body?.instanceUrl || INSTANCE;
 
-    // Step 1: Auth (do this early so we can use token for fallbacks)
-    const token = await getAuthToken(instance);
-
-    // Step 2: Extract Asset ID
-    let pdfAssetId = extractAssetId(req.body);
-    
-    // Step 2b: If extraction failed, try to find asset by searching for recently uploaded file
     if (!pdfAssetId) {
-      console.log('[Handler] Direct extraction failed, attempting fallback: search by filename...');
-      pdfAssetId = await findAssetIdByFilename(req.body, token, instance);
+      return res.status(200).json({ success: false, error: 'No entityId provided' });
     }
-    
-    if (!pdfAssetId) {
-      console.error('[Handler] ❌ Could not extract or find Asset ID');
-      return res.status(400).json({ 
-        success: false, 
-        error: 'No valid assetId in request and could not find asset by filename search',
-        hint: 'Ensure PDF was uploaded to Content Hub and the flow parameters contain either entity ID or valid blob storage source URL'
-      });
-    }
-
-    // Get other metadata
-    const saveMsg = req.body?.saveEntityMessage;
-    const fileNameChange = saveMsg?.ChangeSet?.PropertyChanges?.find(p => p.Property === 'FileName');
-    const pdfFilename = fileNameChange?.NewValue
-      || (req.body?.sources?.[0]?.split('/')?.pop()?.split('?')?.[0])
-      || 'unknown.pdf';
 
     console.log(`[Handler] Asset #${pdfAssetId}, File: ${pdfFilename}, Instance: ${instance}`);
 
-    // Step 3: Download PDF
+    // Step 1: Auth
+    const token = await getAuthToken(instance);
+
+    // Step 2: Download PDF
     const pdfBuffer = await downloadPDF(pdfAssetId, token, instance);
 
-    // Step 4: Extract text
+    // Step 3: Extract text
     const pdfContent = await extractPDFContent(pdfBuffer);
 
     if (!pdfContent.text || pdfContent.text.length < 15) {
@@ -839,16 +658,16 @@ app.post('/api/pdf/associate', async (req, res) => {
       });
     }
 
-    // Step 5: Search for related assets
+    // Step 4: Search for related assets
     const matches = await searchRelatedAssets(pdfContent, token, pdfAssetId, instance, pdfFilename);
     console.log(`[Handler] Found ${matches.length} related assets`);
 
-    // Step 6: Create relations
+    // Step 5: Create relations
     if (matches.length > 0) {
       await createRelatedAssetRelations(pdfAssetId, matches, token, instance);
     }
 
-    // Step 7: Update metadata
+    // Step 6: Update metadata
     const meta = {
       'PDF Association Status': matches.length > 0 ? 'Completed' : 'No Matches Found',
       'PDF Association Count': String(matches.length),
