@@ -621,11 +621,16 @@ app.post('/api/pdf/associate', async (req, res) => {
   try {
     console.log('[Handler] Body:', JSON.stringify(req.body));
 
-    // const { entityId, fileName, instanceUrl, entity } = req.body || {};
+    // Support two request formats:
+    // 1. Entity save webhook: { saveEntityMessage: { TargetId: ..., ChangeSet: { PropertyChanges: [...] } } }
+    // 2. Flow action callback: { parameters: { assetId: "12345" }, sources: ["https://blob.core.windows.net/..."] }
     const saveMsg = req.body?.saveEntityMessage;
-    const pdfAssetId = saveMsg?.TargetId;
+    const params = req.body?.parameters || {};
+    const pdfAssetId = saveMsg?.TargetId || params?.assetId;
     const fileNameChange = saveMsg?.ChangeSet?.PropertyChanges?.find(p => p.Property === 'FileName');
-    const pdfFilename = fileNameChange?.NewValue || 'unknown.pdf';
+    const pdfFilename = fileNameChange?.NewValue
+      || (req.body?.sources?.[0]?.split('/')?.pop()?.split('?')?.[0])
+      || 'unknown.pdf';
     const instance = req.body?.instanceUrl || INSTANCE;
 
     if (!pdfAssetId) {
