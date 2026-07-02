@@ -382,19 +382,29 @@ function scoreMatch(keyword, item) {
   const tags = Array.isArray(props.Tags) ? props.Tags.map(t => String(t).toLowerCase()) : [];
 
   let score = 0;
-  if (name === keyword) score = 0.95;
-  else if (name.startsWith(keyword)) score = 0.80;
-  else if (name.includes(keyword)) score = 0.65;
 
-  if (desc.includes(keyword)) score = Math.max(score, score > 0 ? 0.50 : 0.50);
-  if (tags.some(t => t.includes(keyword))) score = Math.max(score, score > 0 ? 0.45 : 0.45);
+  // ✅ NEW: Exact product name match (highest confidence)
+  if (name === keyword) {
+    score = 0.95;
+  } else if (name.startsWith(keyword) || keyword.startsWith(name)) {
+    // "Guduchi" keyword matches "Guduchi-2000" product name
+    score = 0.85;
+  } else if (name.includes(keyword) || keyword.length > 6 && name.includes(keyword.substring(0, 6))) {
+    score = 0.72;
+  }
 
-  const hits = name.split(/[\s_-]+/).filter(w => keyword.includes(w) && w.length > 2).length;
-  if (hits >= 2 && score > 0) score += 0.05;
+  // Description match (lower weight)
+  if (desc.includes(keyword)) {
+    score = Math.max(score, score > 0 ? 0.55 : 0.45);
+  }
+
+  // Tags match
+  if (tags.some(t => t.includes(keyword))) {
+    score = Math.max(score, score > 0 ? 0.50 : 0.40);
+  }
 
   return Math.min(score, 0.99);
 }
-
 // ==================== RELATIONS ====================
 
 async function createRelatedAssetRelations(pdfAssetId, matches, token, instance) {
