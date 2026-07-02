@@ -316,28 +316,33 @@ async function extractPDFContent(pdfBuffer, knownProducts = []) {
     const matchedProductIds = new Set();
     
     for (const product of knownProducts) {
-      // Strategy 2a: Try exact main product name match first (highest confidence)
+      // Strategy 2a: Try matching the FIRST WORD of the product name
+      // E.g., for "Guduchi-2000", match if "guduchi" appears in text
       if (product.mainName && product.mainName.length > 2) {
-        // Check if main product name appears in text as whole words
-        const mainNameRegex = new RegExp(`\\b${product.mainName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-        if (mainNameRegex.test(text)) {
-          if (!matchedProductIds.has(product.id)) {
-            foundProductNames.push({
-              name: product.mainName,
-              title: product.title,
-              id: product.id,
-              source: 'dynamic_match',
-              confidence: 0.95,
-            });
-            matchedProductIds.add(product.id);
-            continue; // Skip to next product, already matched
+        // Extract first word from main product name
+        const firstWord = product.mainName.split(/[\s\-_]+/)[0];
+        
+        if (firstWord && firstWord.length > 2) {
+          // Check with word boundary (case-insensitive)
+          const firstWordRegex = new RegExp(`\\b${firstWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+          if (firstWordRegex.test(text)) {
+            if (!matchedProductIds.has(product.id)) {
+              foundProductNames.push({
+                name: product.mainName,
+                title: product.title,
+                id: product.id,
+                source: 'dynamic_match',
+                confidence: 0.92,
+              });
+              matchedProductIds.add(product.id);
+              continue;
+            }
           }
         }
       }
       
       // Strategy 2b: Match on SKU if product name didn't match
       if (!matchedProductIds.has(product.id) && product.keywords.some(kw => kw.includes('-') && kw.length > 5)) {
-        // Only check SKU-like keywords (contain dashes, longer names)
         const skuKeywords = product.keywords.filter(kw => kw.includes('-') && kw.length > 5);
         for (const skuKeyword of skuKeywords) {
           if (textLower.includes(skuKeyword)) {
@@ -516,7 +521,9 @@ async function searchRelatedAssets(pdfContent, token, excludeId, instance, pdfFi
           seen.add(id);
           const confidence = scoreMatch(searchTerm, item);
           
-          if (confidence >= 0.50) {
+          // Lower threshold for Tier 3 keyword matches (0.35 instead of 0.50)
+          // Keyword matches are less precise but still valuable
+          if (confidence >= 0.35) {
             matched.push({
               id,
               name: item.properties?.Title || item.properties?.Name || '',
@@ -524,6 +531,7 @@ async function searchRelatedAssets(pdfContent, token, excludeId, instance, pdfFi
               matchedKeyword: searchTerm,
               source: 'keyword_match',
             });
+            console.log(`[Search]   ✓ "${item.properties?.Title || item.name}" matched with keyword "${sanitized}" (confidence=${confidence.toFixed(2)})`);
           }
         }
       } catch (err) {
@@ -566,18 +574,31 @@ function scoreMatch(keyword, item) {
     score = 0.95;
   } else if (name.startsWith(keyword) || keyword.startsWith(name)) {
     score = 0.85;
-  } else if (name.includes(keyword) || keyword.length > 6 && name.includes(keyword.substring(0, 6))) {
+  } else if (name.includes(keyword)) {
     score = 0.72;
+  } else {
+    // NEW: Check if keyword matches the first word of product name
+    // E.g., keyword "guduchi" matches product name "Guduchi-2000"
+    const nameWords = name.split(/[\s\-_]+/);
+    const firstWord = nameWords[0];
+    
+    if (firstWord === keyword) {
+      score = 0.78; // First word exact match
+    } else if (firstWord && firstWord.startsWith(keyword) && keyword.length > 3) {
+      score = 0.68; // First word partial match
+    } else if (keyword.length > 6 && name.includes(keyword.substring(0, 6))) {
+      score = 0.60; // Substring match
+    }
   }
 
-  // Description match (lower weight)
-  if (desc.includes(keyword)) {
-    score = Math.max(score, score > 0 ? 0.55 : 0.45);
+  // Description match (lower weight, only if not already matched well)
+  if (desc.includes(keyword) && score < 0.50) {
+    score = Math.max(score, 0.45);
   }
 
-  // Tags match
-  if (tags.some(t => t.includes(keyword))) {
-    score = Math.max(score, score > 0 ? 0.50 : 0.40);
+  // Tags match (lower weight)
+  if (tags.some(t => t.includes(keyword)) && score < 0.50) {
+    score = Math.max(score, 0.40);
   }
 
   return Math.min(score, 0.99);
