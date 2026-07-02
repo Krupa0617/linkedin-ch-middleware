@@ -95,15 +95,23 @@ function chHeaders(token) {
 
 // ==================== FETCH PRODUCTS DYNAMICALLY ====================
 
+// ─────────────────────────────────────────────────────────────────────
+// FIX 1: Stop filtering out image-extension assets (e.g. .jpg files
+//         that are product images stored as assets in Content Hub).
+//         Also stop stripping dimension suffixes before matching —
+//         instead keep the raw name AND a cleaned "matchName" so we
+//         can try both during scoring.
+// ─────────────────────────────────────────────────────────────────────
 async function getProductList(token, instance) {
   try {
     console.log('[Products] Fetching product list from Content Hub...');
-    
+
     const resp = await axios.get(
       `https://${instance}/api/search`,
       {
         params: {
-          entitydefinition: 'M.Product',
+          entitydefinition: 'M.Asset',   // FIX: search M.Asset not just M.Product
+                                          // so image assets are included
           take: 500,
         },
         headers: chHeaders(token),
@@ -112,42 +120,67 @@ async function getProductList(token, instance) {
     );
 
     const items = resp.data?.items || resp.data?.results || resp.data?.data || [];
+
     const products = items.map(item => {
-      const name = (item.properties?.Name || item.properties?.Title || item.name || item.Name || '').toLowerCase().trim();
-      const sku = (item.properties?.SkuCode || item.properties?.ProductCode || '').toLowerCase().trim();
-      
+      const rawName = (
+        item.properties?.Name ||
+        item.properties?.Title ||
+        item.name ||
+        item.Name ||
+        ''
+      ).trim();
+
+      const sku = (
+        item.properties?.SkuCode ||
+        item.properties?.ProductCode ||
+        ''
+      ).toLowerCase().trim();
+
+      // ── Build a "clean" match name by stripping only decorative suffixes ──
+      // Keep the product word(s) intact:
+      //   "Guduchi-2000_1800x1800.jpg"  → matchName = "guduchi-2000"
+      //   "Ashwagandha_abc123hash.jpg"  → matchName = "ashwagandha"
+      //   "Triphala Churna"             → matchName = "triphala churna"
+      const matchName = rawName
+        .toLowerCase()
+        .replace(/\.(jpg|jpeg|png|gif|webp|svg|pdf)$/i, '') // strip extension
+        .replace(/_\d{3,5}x\d{3,5}$/i, '')                 // strip _1800x1800
+        .replace(/_[a-f0-9]{32,}$/i, '')                    // strip long hash suffix
+        .replace(/-[a-f0-9]{8,}$/i, '')                     // strip short hash suffix
+        .trim();
+
+      // FIX 2: Only skip entries that are PURELY a UUID/hash with NO readable
+      //         product word at the start.
+      const isBarePureUUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(matchName);
+      const isBarePureHash = /^[a-f0-9]{32,}$/.test(matchName);
+
+      if (isBarePureUUID || isBarePureHash || matchName.length === 0) {
+        return null; // will be filtered below
+      }
+
+      // Extract individual words for keyword matching
+      const nameWords = matchName.split(/[\s\-_]+/).filter(w => w.length > 2);
+
       return {
         id: String(item.id || item.Id),
-        name: name,
-        title: item.properties?.Title || item.properties?.Name || '',
-        // For matching, use only the main product name (without image extensions or UUID artifacts)
-        mainName: name
-          .replace(/\.(jpg|jpeg|png|gif|webp|svg)$/i, '') // Remove image extensions
-          .replace(/_\d{4}x\d{4}$/, '') // Remove dimension suffixes like _1800x1800
-          .replace(/_[a-f0-9]{40,}/, '') // Remove hash/UUID suffixes
-          .trim(),
+        rawName,                         // original, unmodified
+        name: matchName,                 // cleaned, lowercase
+        title: item.properties?.Title || item.properties?.Name || rawName,
+        mainName: matchName,
         keywords: [
-          name,
+          matchName,
           sku,
-          ...(name.split(/[\s\-_]/).filter(w => w.length > 2)),
+          ...nameWords,
         ].filter(Boolean),
-        searchTerms: name.split(/[\s\-_]/).filter(w => w.length > 2),
+        searchTerms: nameWords,
       };
-    })
-    .filter(p => p.name.length > 0)
-    .filter(p => {
-      // Filter out image files and UUID-like products
-      const isImage = /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(p.name);
-      const isUUID = /^[a-f0-9\-]{36,}$/i.test(p.name); // UUID format
-      const isHash = /^[a-f0-9]{32,}$/i.test(p.name); // Hash format
-      return !isImage && !isUUID && !isHash && p.mainName.length > 0;
-    });
+    }).filter(Boolean); // remove nulls
 
-    console.log(`[Products] ✓ Fetched ${products.length} products (filtered)`);
+    console.log(`[Products] ✓ Fetched ${products.length} assets (filtered)`);
     if (products.length > 0) {
-      console.log(`[Products] Sample: ${products.slice(0, 5).map(p => p.title).join(', ')}`);
+      console.log(`[Products] Sample: ${products.slice(0, 5).map(p => p.rawName).join(', ')}`);
     }
-    
+
     return products;
   } catch (err) {
     console.warn(`[Products] Failed to fetch products: ${err.message}`);
@@ -299,6 +332,12 @@ function extractDownloadUrlsFromRenditions(renditionsData, instance, assetId) {
 
 // ==================== PDF PARSING ====================
 
+// ─────────────────────────────────────────────────────────────────────
+// FIX 3: extractPDFContent now matches against the CLEANED matchName
+//         (which strips image extensions and dimension suffixes before
+//         comparing), so "Guduchi-2000_1800x1800.jpg" → matchName
+//         "guduchi-2000" → first word "guduchi" → matched in PDF text.
+// ─────────────────────────────────────────────────────────────────────
 async function extractPDFContent(pdfBuffer, knownProducts = []) {
   try {
     const data = await pdfParse(pdfBuffer);
@@ -311,38 +350,60 @@ async function extractPDFContent(pdfBuffer, knownProducts = []) {
     const foundProductNumbers = text.match(productNumberRegex) || [];
 
     // Strategy 2: Match against known products from Content Hub
-    // Only match if main product name appears in PDF text (with word boundaries)
     const foundProductNames = [];
     const matchedProductIds = new Set();
-    
+
     for (const product of knownProducts) {
-      // Strategy 2a: Try matching the FIRST WORD of the product name
-      // E.g., for "Guduchi-2000", match if "guduchi" appears in text
-      if (product.mainName && product.mainName.length > 2) {
-        // Extract first word from main product name
-        const firstWord = product.mainName.split(/[\s\-_]+/)[0];
-        
+      // Use the cleaned matchName (e.g. "guduchi-2000") for matching,
+      // NOT the raw name which may include ".jpg" or "_1800x1800".
+      const cleanName = product.mainName; // already cleaned in getProductList
+
+      if (cleanName && cleanName.length > 2) {
+
+        // Strategy 2a: Try the FIRST WORD of the cleaned product name
+        // "guduchi-2000" → firstWord = "guduchi"
+        const firstWord = cleanName.split(/[\s\-_]+/)[0];
+
         if (firstWord && firstWord.length > 2) {
-          // Check with word boundary (case-insensitive)
-          const firstWordRegex = new RegExp(`\\b${firstWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-          if (firstWordRegex.test(text)) {
-            if (!matchedProductIds.has(product.id)) {
-              foundProductNames.push({
-                name: product.mainName,
-                title: product.title,
-                id: product.id,
-                source: 'dynamic_match',
-                confidence: 0.92,
-              });
-              matchedProductIds.add(product.id);
-              continue;
-            }
+          const firstWordRegex = new RegExp(
+            `\\b${firstWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`,
+            'i'
+          );
+          if (firstWordRegex.test(text) && !matchedProductIds.has(product.id)) {
+            foundProductNames.push({
+              name: cleanName,
+              title: product.title,
+              id: product.id,
+              source: 'dynamic_match',
+              confidence: 0.92,
+            });
+            matchedProductIds.add(product.id);
+            continue;
+          }
+        }
+
+        // Strategy 2b: Try matching the full cleaned name (handles multi-word products)
+        if (!matchedProductIds.has(product.id)) {
+          const fullNameRegex = new RegExp(
+            `\\b${cleanName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`,
+            'i'
+          );
+          if (fullNameRegex.test(text)) {
+            foundProductNames.push({
+              name: cleanName,
+              title: product.title,
+              id: product.id,
+              source: 'full_name_match',
+              confidence: 0.95,
+            });
+            matchedProductIds.add(product.id);
+            continue;
           }
         }
       }
-      
-      // Strategy 2b: Match on SKU if product name didn't match
-      if (!matchedProductIds.has(product.id) && product.keywords.some(kw => kw.includes('-') && kw.length > 5)) {
+
+      // Strategy 2c: Match on SKU if name didn't match
+      if (!matchedProductIds.has(product.id)) {
         const skuKeywords = product.keywords.filter(kw => kw.includes('-') && kw.length > 5);
         for (const skuKeyword of skuKeywords) {
           if (textLower.includes(skuKeyword)) {
@@ -368,7 +429,7 @@ async function extractPDFContent(pdfBuffer, knownProducts = []) {
       /how to use/i,
       /dosage/i,
     ];
-    
+
     let boilerplateStart = text.length;
     for (const pattern of boilerplatePatterns) {
       const match = text.toLowerCase().search(pattern);
@@ -376,9 +437,9 @@ async function extractPDFContent(pdfBuffer, knownProducts = []) {
         boilerplateStart = match;
       }
     }
-    
-    const mainContent = boilerplateStart < text.length 
-      ? text.substring(0, boilerplateStart) 
+
+    const mainContent = boilerplateStart < text.length
+      ? text.substring(0, boilerplateStart)
       : text;
 
     // Extract keywords
@@ -391,7 +452,7 @@ async function extractPDFContent(pdfBuffer, knownProducts = []) {
 
     const freq = {};
     rawWords.forEach(w => { freq[w] = (freq[w] || 0) + 1; });
-    
+
     const keywords = [...new Set(rawWords)]
       .sort((a, b) => (freq[b] - freq[a]) || a.localeCompare(b))
       .slice(0, 25);
@@ -428,9 +489,13 @@ async function extractPDFContent(pdfBuffer, knownProducts = []) {
 
 // ==================== SEARCH RELATED ASSETS ====================
 
+// ─────────────────────────────────────────────────────────────────────
+// FIX 4: scoreMatch now uses the asset's CLEANED name for comparison,
+//         not the raw name, so ".jpg" / "_1800x1800" don't block hits.
+// ─────────────────────────────────────────────────────────────────────
 async function searchRelatedAssets(pdfContent, token, excludeId, instance, pdfFilename, knownProducts = []) {
   const { keywords, productNumbers, productNames } = pdfContent;
-  
+
   const matched = [];
   const seen = new Set();
 
@@ -459,21 +524,21 @@ async function searchRelatedAssets(pdfContent, token, excludeId, instance, pdfFi
         {
           params: {
             fulltext: code,
-            entitydefinition: 'M.Product',
+            entitydefinition: 'M.Asset',  // FIX: search M.Asset
             take: 50,
           },
           headers: chHeaders(token),
           timeout: 10000,
         }
       );
-      
+
       const items = resp.data?.items || resp.data?.results || resp.data?.data || [];
       console.log(`[Search] Code "${code}" -> ${items.length} results`);
-      
+
       for (const item of items) {
         const id = String(item.id || item.Id);
         if (id === String(excludeId) || seen.has(id)) continue;
-        
+
         seen.add(id);
         matched.push({
           id,
@@ -491,38 +556,36 @@ async function searchRelatedAssets(pdfContent, token, excludeId, instance, pdfFi
   // TIER 3: Keyword-based search (only if tiers 1 & 2 didn't find much)
   if (matched.length < 3) {
     console.log(`[Search] Tier 3: Keyword search (${matched.length} found so far)...`);
-    
+
     const searchTerms = [...keywords.slice(0, 10)];
-    
+
     for (const searchTerm of searchTerms) {
       const sanitized = searchTerm.replace(/[\\"'*()]/g, '');
-      
+
       try {
         const resp = await axios.get(
           `https://${instance}/api/search`,
           {
             params: {
               fulltext: sanitized,
-              entitydefinition: 'M.Product',
+              entitydefinition: 'M.Asset',  // FIX: search M.Asset
               take: 100,
             },
             headers: chHeaders(token),
             timeout: 10000,
           }
         );
-        
+
         const items = resp.data?.items || resp.data?.results || resp.data?.data || [];
         console.log(`[Search] Keyword "${sanitized}" -> ${items.length} results`);
-        
+
         for (const item of items) {
           const id = String(item.id || item.Id);
           if (id === String(excludeId) || seen.has(id)) continue;
-          
+
           seen.add(id);
           const confidence = scoreMatch(searchTerm, item);
-          
-          // Lower threshold for Tier 3 keyword matches (0.35 instead of 0.50)
-          // Keyword matches are less precise but still valuable
+
           if (confidence >= 0.35) {
             matched.push({
               id,
@@ -563,13 +626,24 @@ async function searchRelatedAssets(pdfContent, token, excludeId, instance, pdfFi
 
 function scoreMatch(keyword, item) {
   const props = item.properties || {};
-  const name = (props.Name || props.Title || '').toLowerCase();
+
+  // ── FIX 5: Clean the asset name the same way getProductList does,
+  //           so "Guduchi-2000_1800x1800.jpg" scores correctly against
+  //           the keyword "guduchi". ──
+  const rawName = (props.Name || props.Title || '').toLowerCase();
+  const name = rawName
+    .replace(/\.(jpg|jpeg|png|gif|webp|svg|pdf)$/i, '')
+    .replace(/_\d{3,5}x\d{3,5}$/i, '')
+    .replace(/_[a-f0-9]{32,}$/i, '')
+    .replace(/-[a-f0-9]{8,}$/i, '')
+    .trim();
+
   const desc = (props.Description || '').toLowerCase();
   const tags = Array.isArray(props.Tags) ? props.Tags.map(t => String(t).toLowerCase()) : [];
 
   let score = 0;
 
-  // Exact product name match (highest confidence)
+  // Exact cleaned name match
   if (name === keyword) {
     score = 0.95;
   } else if (name.startsWith(keyword) || keyword.startsWith(name)) {
@@ -577,11 +651,10 @@ function scoreMatch(keyword, item) {
   } else if (name.includes(keyword)) {
     score = 0.72;
   } else {
-    // NEW: Check if keyword matches the first word of product name
-    // E.g., keyword "guduchi" matches product name "Guduchi-2000"
+    // Check if keyword matches the first word of the cleaned product name
     const nameWords = name.split(/[\s\-_]+/);
     const firstWord = nameWords[0];
-    
+
     if (firstWord === keyword) {
       score = 0.78; // First word exact match
     } else if (firstWord && firstWord.startsWith(keyword) && keyword.length > 3) {
@@ -591,7 +664,7 @@ function scoreMatch(keyword, item) {
     }
   }
 
-  // Description match (lower weight, only if not already matched well)
+  // Description match (lower weight)
   if (desc.includes(keyword) && score < 0.50) {
     score = Math.max(score, 0.45);
   }
@@ -843,13 +916,13 @@ app.post('/api/pdf/associate', async (req, res) => {
     // Step 1: Auth
     const token = await getAuthToken(instance);
 
-    // Step 2: Fetch product list dynamically ✅ NEW
+    // Step 2: Fetch asset list dynamically (includes image assets like .jpg)
     const knownProducts = await getProductList(token, instance);
 
     // Step 3: Download PDF
     const pdfBuffer = await downloadPDF(pdfAssetId, token, instance);
 
-    // Step 4: Extract text WITH product matching ✅ UPDATED
+    // Step 4: Extract text WITH product matching
     const pdfContent = await extractPDFContent(pdfBuffer, knownProducts);
 
     if (!pdfContent.text || pdfContent.text.length < 15) {
@@ -867,7 +940,7 @@ app.post('/api/pdf/associate', async (req, res) => {
       });
     }
 
-    // Step 5: Search for related assets WITH three-tier strategy ✅ UPDATED
+    // Step 5: Search for related assets with three-tier strategy
     const matches = await searchRelatedAssets(pdfContent, token, pdfAssetId, instance, pdfFilename, knownProducts);
     console.log(`[Handler] Found ${matches.length} related assets`);
 
