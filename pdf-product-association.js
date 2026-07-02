@@ -89,6 +89,54 @@ function chHeaders(token) {
   return headers;
 }
 
+// ==================== FETCH PRODUCTS DYNAMICALLY ====================
+
+async function getProductList(token, instance) {
+  try {
+    console.log('[Products] Fetching product list from Content Hub...');
+    
+    const resp = await axios.get(
+      `https://${instance}/api/search`,
+      {
+        params: {
+          entitydefinition: 'M.Product',
+          take: 500,
+        },
+        headers: chHeaders(token),
+        timeout: 10000,
+      }
+    );
+
+    const items = resp.data?.items || resp.data?.results || resp.data?.data || [];
+    const products = items.map(item => {
+      const name = (item.properties?.Name || item.properties?.Title || item.name || item.Name || '').toLowerCase().trim();
+      const sku = (item.properties?.SkuCode || item.properties?.ProductCode || '').toLowerCase().trim();
+      
+      return {
+        id: String(item.id || item.Id),
+        name: name,
+        title: item.properties?.Title || item.properties?.Name || '',
+        keywords: [
+          name,
+          sku,
+          ...(name.split(/[\s\-_]/).filter(w => w.length > 2)),
+        ].filter(Boolean),
+        searchTerms: name.split(/[\s\-_]/).filter(w => w.length > 2),
+      };
+    }).filter(p => p.name.length > 0);
+
+    console.log(`[Products] ✓ Fetched ${products.length} products`);
+    if (products.length > 0) {
+      console.log(`[Products] Sample: ${products.slice(0, 5).map(p => p.title).join(', ')}`);
+    }
+    
+    return products;
+  } catch (err) {
+    console.warn(`[Products] Failed to fetch products: ${err.message}`);
+    return [];
+  }
+}
+
 // ==================== PDF DOWNLOAD ====================
 
 async function downloadPDF(assetId, token, instance) {
@@ -231,20 +279,64 @@ function extractDownloadUrlsFromRenditions(renditionsData, instance, assetId) {
   return urls;
 }
 
-// ==================== PDF PARSING (pdf-parse - pure JS, no system deps) ====================
+// ==================== PDF PARSING ====================
 
-async function extractPDFContent(pdfBuffer) {
+async function extractPDFContent(pdfBuffer, knownProducts = []) {
   try {
     const data = await pdfParse(pdfBuffer);
     const text = (data.text || '').substring(0, 3000).trim();
     const pageCount = data.numpages || 1;
+    const textLower = text.toLowerCase();
 
-    // Extract product numbers (HIM-XXXX format)
+    // Strategy 1: Extract product codes (HIM-XXXX format)
     const productNumberRegex = /[A-Z]{2,4}-\d{3,6}/g;
     const foundProductNumbers = text.match(productNumberRegex) || [];
 
-    // Extract keywords by frequency
-    const rawWords = text
+    // Strategy 2: Match against known products from Content Hub
+    const foundProductNames = [];
+    const matchedProductIds = new Set();
+    
+    for (const product of knownProducts) {
+      for (const keyword of product.keywords) {
+        if (keyword.length >= 3 && textLower.includes(keyword)) {
+          if (!matchedProductIds.has(product.id)) {
+            foundProductNames.push({
+              name: product.name,
+              title: product.title,
+              id: product.id,
+              source: 'dynamic_match',
+              confidence: 0.95,
+            });
+            matchedProductIds.add(product.id);
+          }
+          break;
+        }
+      }
+    }
+
+    // Strategy 3: Extract keywords from content (excluding boilerplate sections)
+    const boilerplatePatterns = [
+      /special instructions/i,
+      /directions for use/i,
+      /good to know/i,
+      /how to use/i,
+      /dosage/i,
+    ];
+    
+    let boilerplateStart = text.length;
+    for (const pattern of boilerplatePatterns) {
+      const match = text.toLowerCase().search(pattern);
+      if (match > 0 && match < boilerplateStart) {
+        boilerplateStart = match;
+      }
+    }
+    
+    const mainContent = boilerplateStart < text.length 
+      ? text.substring(0, boilerplateStart) 
+      : text;
+
+    // Extract keywords
+    const rawWords = mainContent
       .toLowerCase()
       .split(/[\s\n\r,\.\;:!?()"'\-\–—/\\|@#$%^&*+=<>[\]{}~`]+/)
       .filter(w => w.length >= 4 && w.length <= 50)
@@ -253,16 +345,21 @@ async function extractPDFContent(pdfBuffer) {
 
     const freq = {};
     rawWords.forEach(w => { freq[w] = (freq[w] || 0) + 1; });
+    
     const keywords = [...new Set(rawWords)]
       .sort((a, b) => (freq[b] - freq[a]) || a.localeCompare(b))
       .slice(0, 25);
 
-    console.log(`[PDF] Extracted ${text.length} chars, ${keywords.length} keywords from ${pageCount} pages`);
+    console.log(`[PDF] Extracted ${text.length} chars from ${pageCount} pages`);
+    console.log(`[PDF] Dynamic product matches: ${foundProductNames.length} (${foundProductNames.map(p => p.name).join(', ')})`);
+    console.log(`[PDF] Product codes found: ${foundProductNumbers.join(', ')}`);
+    console.log(`[PDF] Keywords (${keywords.length}): ${keywords.slice(0, 10).join(', ')}...`);
 
     return {
       text,
       pages: pageCount,
       productNumbers: [...new Set(foundProductNumbers)],
+      productNames: foundProductNames,
       keywords,
       metadata: {
         title: data.info?.Title || '',
@@ -278,101 +375,134 @@ async function extractPDFContent(pdfBuffer) {
 
 // ==================== SEARCH RELATED ASSETS ====================
 
-async function searchRelatedAssets(pdfContent, token, excludeId, instance, pdfFilename) {
-  const { keywords, productNumbers } = pdfContent;
-  if ((!keywords || keywords.length === 0) && (!productNumbers || productNumbers.length === 0)) return [];
-
+async function searchRelatedAssets(pdfContent, token, excludeId, instance, pdfFilename, knownProducts = []) {
+  const { keywords, productNumbers, productNames } = pdfContent;
+  
   const matched = [];
   const seen = new Set();
 
-  // Extract PDF base name (e.g. "Bresol" from "Bresol.pdf" or "Bresol (1).pdf")
-  const pdfBaseName = (pdfFilename || '')
-    .replace(/\.pdf$/i, '')
-    .replace(/\s*\(.*?\)\s*/g, '')  // strip (1), (2), etc.
-    .replace(/[\s_\-]+/g, ' ')
-    .trim()
-    .toLowerCase();
-
-  // Also keep the full name without extension for searching
-  const pdfFullName = (pdfFilename || '')
-    .replace(/\.pdf$/i, '')
-    .replace(/[\s_\-]+/g, ' ')
-    .trim()
-    .toLowerCase();
-
-  // Build search terms: filename variants first, then product numbers, then keywords
-  const searchTerms = [];
-  if (pdfBaseName) searchTerms.push(pdfBaseName);
-  if (pdfFullName && pdfFullName !== pdfBaseName) searchTerms.push(pdfFullName);
-  searchTerms.push(...productNumbers.slice(0, 5));
-  // Add keywords that are most likely to be product names (short, capitalized-looking)
-  for (const kw of keywords) {
-    if (kw.length >= 3 && kw.length <= 30 && !searchTerms.includes(kw)) {
-      searchTerms.push(kw);
-    }
-    if (searchTerms.length >= 10) break;
-  }
-
-  for (const searchTerm of searchTerms) {
-    const sanitized = searchTerm.replace(/[\\"'*()]/g, '');
-    let found = false;
-
-    // Strategy 1 — GET /api/search with fulltext parameter
-    if (!found) {
-      try {
-        const resp = await axios.get(
-          `https://${instance}/api/search`,
-          { params: { fulltext: sanitized, entitydefinition: 'M.Asset', take: 500 }, headers: chHeaders(token), timeout: 10000 },
-        );
-        const items = resp.data?.items || resp.data?.results || resp.data?.data || [];
-        console.log(`[Search] fulltext="${sanitized}" -> ${items.length} items of ${resp.data?.totalItemCount || 0} total`);
-        for (const item of items) {
-          const id = String(item.id || item.Id);
-          const name = item.properties?.Title || item.properties?.Name || item.name || item.Name || '';
-          if (id === String(excludeId) || seen.has(id)) continue;
-          seen.add(id);
-          const confidence = scoreMatch(searchTerm, item);
-          if (confidence >= CONFIDENCE_MIN) matched.push({ id, name, confidence, matchedKeyword: searchTerm });
-        }
-        found = true;
-      } catch (err) {
-        console.log(`[Search] fulltext="${sanitized}": ${err.message}`);
-      }
-    }
-
-    // Strategy 2 — GET /api/search with q parameter (fallback)
-    if (!found) {
-      try {
-        const resp = await axios.get(
-          `https://${instance}/api/search`,
-          { params: { q: sanitized, entitydefinition: 'M.Asset', take: 500 }, headers: chHeaders(token), timeout: 10000 },
-        );
-        const items = resp.data?.items || resp.data?.results || resp.data?.data || [];
-        for (const item of items) {
-          const id = String(item.id || item.Id);
-          const name = item.properties?.Title || item.properties?.Name || item.name || item.Name || '';
-          if (id === String(excludeId) || seen.has(id)) continue;
-          seen.add(id);
-          const confidence = scoreMatch(searchTerm, item);
-          if (confidence >= CONFIDENCE_MIN) matched.push({ id, name, confidence, matchedKeyword: searchTerm });
-        }
-        found = true;
-      } catch (err) {
-        console.log(`[Search] q="${sanitized}": ${err.message}`);
-      }
+  // TIER 1: Direct product name matches (highest confidence)
+  console.log(`[Search] Tier 1: Direct product name matches...`);
+  for (const product of productNames) {
+    if (String(product.id) !== String(excludeId) && !seen.has(String(product.id))) {
+      seen.add(String(product.id));
+      matched.push({
+        id: product.id,
+        name: product.title || product.name,
+        confidence: product.confidence || 0.95,
+        matchedKeyword: product.name,
+        source: 'direct_product_match',
+      });
+      console.log(`[Search] ✓ Matched: ${product.title} (confidence=${product.confidence})`);
     }
   }
 
-  // Deduplicate by id, keep highest confidence
+  // TIER 2: Search for product codes
+  console.log(`[Search] Tier 2: Product codes search...`);
+  for (const code of productNumbers) {
+    try {
+      const resp = await axios.get(
+        `https://${instance}/api/search`,
+        {
+          params: {
+            fulltext: code,
+            entitydefinition: 'M.Product',
+            take: 50,
+          },
+          headers: chHeaders(token),
+          timeout: 10000,
+        }
+      );
+      
+      const items = resp.data?.items || resp.data?.results || resp.data?.data || [];
+      console.log(`[Search] Code "${code}" -> ${items.length} results`);
+      
+      for (const item of items) {
+        const id = String(item.id || item.Id);
+        if (id === String(excludeId) || seen.has(id)) continue;
+        
+        seen.add(id);
+        matched.push({
+          id,
+          name: item.properties?.Title || item.properties?.Name || item.name || '',
+          confidence: 0.88,
+          matchedKeyword: code,
+          source: 'product_code_match',
+        });
+      }
+    } catch (err) {
+      console.log(`[Search] Code "${code}" search failed: ${err.message}`);
+    }
+  }
+
+  // TIER 3: Keyword-based search (only if tiers 1 & 2 didn't find much)
+  if (matched.length < 3) {
+    console.log(`[Search] Tier 3: Keyword search (${matched.length} found so far)...`);
+    
+    const searchTerms = [...keywords.slice(0, 10)];
+    
+    for (const searchTerm of searchTerms) {
+      const sanitized = searchTerm.replace(/[\\"'*()]/g, '');
+      
+      try {
+        const resp = await axios.get(
+          `https://${instance}/api/search`,
+          {
+            params: {
+              fulltext: sanitized,
+              entitydefinition: 'M.Product',
+              take: 100,
+            },
+            headers: chHeaders(token),
+            timeout: 10000,
+          }
+        );
+        
+        const items = resp.data?.items || resp.data?.results || resp.data?.data || [];
+        console.log(`[Search] Keyword "${sanitized}" -> ${items.length} results`);
+        
+        for (const item of items) {
+          const id = String(item.id || item.Id);
+          if (id === String(excludeId) || seen.has(id)) continue;
+          
+          seen.add(id);
+          const confidence = scoreMatch(searchTerm, item);
+          
+          if (confidence >= 0.50) {
+            matched.push({
+              id,
+              name: item.properties?.Title || item.properties?.Name || '',
+              confidence,
+              matchedKeyword: searchTerm,
+              source: 'keyword_match',
+            });
+          }
+        }
+      } catch (err) {
+        console.log(`[Search] Keyword "${sanitized}" failed: ${err.message}`);
+      }
+    }
+  }
+
+  // Deduplicate, sort by confidence, limit results
   const best = new Map();
   for (const m of matched) {
     const prev = best.get(m.id);
-    if (!prev || m.confidence > prev.confidence) best.set(m.id, m);
+    if (!prev || m.confidence > prev.confidence) {
+      best.set(m.id, m);
+    }
   }
 
-  return [...best.values()]
+  const results = [...best.values()]
     .sort((a, b) => b.confidence - a.confidence)
     .slice(0, 15);
+
+  console.log(`[Search] Final results: ${results.length} matches`);
+  results.forEach(r => {
+    console.log(`  - ${r.name} (${r.source}, confidence=${r.confidence.toFixed(2)})`);
+  });
+
+  return results;
 }
 
 function scoreMatch(keyword, item) {
@@ -383,11 +513,10 @@ function scoreMatch(keyword, item) {
 
   let score = 0;
 
-  // ✅ NEW: Exact product name match (highest confidence)
+  // Exact product name match (highest confidence)
   if (name === keyword) {
     score = 0.95;
   } else if (name.startsWith(keyword) || keyword.startsWith(name)) {
-    // "Guduchi" keyword matches "Guduchi-2000" product name
     score = 0.85;
   } else if (name.includes(keyword) || keyword.length > 6 && name.includes(keyword.substring(0, 6))) {
     score = 0.72;
@@ -405,6 +534,7 @@ function scoreMatch(keyword, item) {
 
   return Math.min(score, 0.99);
 }
+
 // ==================== RELATIONS ====================
 
 async function createRelatedAssetRelations(pdfAssetId, matches, token, instance) {
@@ -479,7 +609,6 @@ async function createRelatedAssetRelations(pdfAssetId, matches, token, instance)
       );
       console.log(`[Relation] S3 status=${s3Res.status}, data=${JSON.stringify(s3Res.data || '').substring(0, 500)}`);
       if (s3Res.status === 200) {
-        // Verify: re-fetch the entity and check the relations
         console.log(`[Relation] S3 returned 200 — verifying by re-fetching entity...`);
         const vRes = await axios.get(
           `https://${instance}/api/entities/${pdfAssetId}`,
@@ -487,7 +616,6 @@ async function createRelatedAssetRelations(pdfAssetId, matches, token, instance)
         );
         const vRel = vRes.data?.relations?.[RELATION_TYPE] || {};
         console.log(`[Relation] Verify: ${RELATION_TYPE} = ${JSON.stringify(vRel).substring(0, 400)}`);
-        // Also try to read the relation endpoint to check if children were added
         const relHref = vRel?.href;
         if (relHref) {
           const relRes = await axios.get(relHref, { headers: chHeaders(token), timeout: 10000, validateStatus: s => true });
@@ -631,7 +759,6 @@ app.post('/api/pdf/associate', async (req, res) => {
   try {
     console.log('[Handler] Body:', JSON.stringify(req.body));
 
-    // const { entityId, fileName, instanceUrl, entity } = req.body || {};
     const saveMsg = req.body?.saveEntityMessage;
     const pdfAssetId = saveMsg?.TargetId;
     const fileNameChange = saveMsg?.ChangeSet?.PropertyChanges?.find(p => p.Property === 'FileName');
@@ -647,11 +774,14 @@ app.post('/api/pdf/associate', async (req, res) => {
     // Step 1: Auth
     const token = await getAuthToken(instance);
 
-    // Step 2: Download PDF
+    // Step 2: Fetch product list dynamically ✅ NEW
+    const knownProducts = await getProductList(token, instance);
+
+    // Step 3: Download PDF
     const pdfBuffer = await downloadPDF(pdfAssetId, token, instance);
 
-    // Step 3: Extract text
-    const pdfContent = await extractPDFContent(pdfBuffer);
+    // Step 4: Extract text WITH product matching ✅ UPDATED
+    const pdfContent = await extractPDFContent(pdfBuffer, knownProducts);
 
     if (!pdfContent.text || pdfContent.text.length < 15) {
       console.log('[Handler] Insufficient text, skipping');
@@ -668,16 +798,16 @@ app.post('/api/pdf/associate', async (req, res) => {
       });
     }
 
-    // Step 4: Search for related assets
-    const matches = await searchRelatedAssets(pdfContent, token, pdfAssetId, instance, pdfFilename);
+    // Step 5: Search for related assets WITH three-tier strategy ✅ UPDATED
+    const matches = await searchRelatedAssets(pdfContent, token, pdfAssetId, instance, pdfFilename, knownProducts);
     console.log(`[Handler] Found ${matches.length} related assets`);
 
-    // Step 5: Create relations
+    // Step 6: Create relations
     if (matches.length > 0) {
       await createRelatedAssetRelations(pdfAssetId, matches, token, instance);
     }
 
-    // Step 6: Update metadata
+    // Step 7: Update metadata
     const meta = {
       'PDF Association Status': matches.length > 0 ? 'Completed' : 'No Matches Found',
       'PDF Association Count': String(matches.length),
@@ -702,6 +832,7 @@ app.post('/api/pdf/associate', async (req, res) => {
         assetId: m.id,
         assetName: m.name,
         confidence: +m.confidence.toFixed(2),
+        source: m.source,
       })),
     });
 
