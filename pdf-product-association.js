@@ -33,6 +33,10 @@ const STOP_WORDS = new Set([
   'such','each','would','could','should','after','before','between','where',
   'there','these','those','upon','while','until','because','without','just',
   'like','some','they','very','over','your','most','every',
+  // Product description boilerplate
+  'contains','contained','including','include','care','consult','physician',
+  'advised','advisable','special','conditions','symptoms','persist','directions',
+  'instructions','recommend','recommended','suggest','suggested',
 ]);
 
 // ==================== AUTH ====================
@@ -116,6 +120,12 @@ async function getProductList(token, instance) {
         id: String(item.id || item.Id),
         name: name,
         title: item.properties?.Title || item.properties?.Name || '',
+        // For matching, use only the main product name (without image extensions or UUID artifacts)
+        mainName: name
+          .replace(/\.(jpg|jpeg|png|gif|webp|svg)$/i, '') // Remove image extensions
+          .replace(/_\d{4}x\d{4}$/, '') // Remove dimension suffixes like _1800x1800
+          .replace(/_[a-f0-9]{40,}/, '') // Remove hash/UUID suffixes
+          .trim(),
         keywords: [
           name,
           sku,
@@ -123,9 +133,17 @@ async function getProductList(token, instance) {
         ].filter(Boolean),
         searchTerms: name.split(/[\s\-_]/).filter(w => w.length > 2),
       };
-    }).filter(p => p.name.length > 0);
+    })
+    .filter(p => p.name.length > 0)
+    .filter(p => {
+      // Filter out image files and UUID-like products
+      const isImage = /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(p.name);
+      const isUUID = /^[a-f0-9\-]{36,}$/i.test(p.name); // UUID format
+      const isHash = /^[a-f0-9]{32,}$/i.test(p.name); // Hash format
+      return !isImage && !isUUID && !isHash && p.mainName.length > 0;
+    });
 
-    console.log(`[Products] ✓ Fetched ${products.length} products`);
+    console.log(`[Products] ✓ Fetched ${products.length} products (filtered)`);
     if (products.length > 0) {
       console.log(`[Products] Sample: ${products.slice(0, 5).map(p => p.title).join(', ')}`);
     }
@@ -293,23 +311,46 @@ async function extractPDFContent(pdfBuffer, knownProducts = []) {
     const foundProductNumbers = text.match(productNumberRegex) || [];
 
     // Strategy 2: Match against known products from Content Hub
+    // Only match if main product name appears in PDF text (with word boundaries)
     const foundProductNames = [];
     const matchedProductIds = new Set();
     
     for (const product of knownProducts) {
-      for (const keyword of product.keywords) {
-        if (keyword.length >= 3 && textLower.includes(keyword)) {
+      // Strategy 2a: Try exact main product name match first (highest confidence)
+      if (product.mainName && product.mainName.length > 2) {
+        // Check if main product name appears in text as whole words
+        const mainNameRegex = new RegExp(`\\b${product.mainName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        if (mainNameRegex.test(text)) {
           if (!matchedProductIds.has(product.id)) {
             foundProductNames.push({
-              name: product.name,
+              name: product.mainName,
               title: product.title,
               id: product.id,
               source: 'dynamic_match',
               confidence: 0.95,
             });
             matchedProductIds.add(product.id);
+            continue; // Skip to next product, already matched
           }
-          break;
+        }
+      }
+      
+      // Strategy 2b: Match on SKU if product name didn't match
+      if (!matchedProductIds.has(product.id) && product.keywords.some(kw => kw.includes('-') && kw.length > 5)) {
+        // Only check SKU-like keywords (contain dashes, longer names)
+        const skuKeywords = product.keywords.filter(kw => kw.includes('-') && kw.length > 5);
+        for (const skuKeyword of skuKeywords) {
+          if (textLower.includes(skuKeyword)) {
+            foundProductNames.push({
+              name: product.mainName || product.name,
+              title: product.title,
+              id: product.id,
+              source: 'sku_match',
+              confidence: 0.90,
+            });
+            matchedProductIds.add(product.id);
+            break;
+          }
         }
       }
     }
@@ -351,9 +392,16 @@ async function extractPDFContent(pdfBuffer, knownProducts = []) {
       .slice(0, 25);
 
     console.log(`[PDF] Extracted ${text.length} chars from ${pageCount} pages`);
-    console.log(`[PDF] Dynamic product matches: ${foundProductNames.length} (${foundProductNames.map(p => p.name).join(', ')})`);
-    console.log(`[PDF] Product codes found: ${foundProductNumbers.join(', ')}`);
-    console.log(`[PDF] Keywords (${keywords.length}): ${keywords.slice(0, 10).join(', ')}...`);
+    if (foundProductNames.length > 0) {
+      console.log(`[PDF] ✓ Dynamic product matches: ${foundProductNames.length}`);
+      foundProductNames.forEach(p => {
+        console.log(`       - ${p.title} (${p.source}, confidence=${p.confidence})`);
+      });
+    } else {
+      console.log(`[PDF] No direct product matches found`);
+    }
+    console.log(`[PDF] Product codes found: ${foundProductNumbers.length > 0 ? foundProductNumbers.join(', ') : 'none'}`);
+    console.log(`[PDF] Keywords (${keywords.length}): ${keywords.join(', ')}`);
 
     return {
       text,
