@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 import express from 'express';
 import axios from 'axios';
 import cors from 'cors';
+import { injectSpeedInsights } from '@vercel/speed-insights';
 
 dotenv.config();
 
@@ -9,6 +10,11 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cors());
+
+// Initialize Vercel Speed Insights
+if (process.env.NODE_ENV === 'production') {
+  injectSpeedInsights();
+}
 
 const {
   LINKEDIN_CLIENT_ID,
