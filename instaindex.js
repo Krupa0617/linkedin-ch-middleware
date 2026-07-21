@@ -3,6 +3,7 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import sharp from 'sharp';
+import { injectSpeedInsights } from '@vercel/speed-insights';
 
 dotenv.config();
 
@@ -10,6 +11,11 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cors());
+
+// Initialize Vercel Speed Insights
+if (process.env.NODE_ENV === 'production') {
+  injectSpeedInsights();
+}
 
 // ─────────────────────────────────────────────
 // Configuration

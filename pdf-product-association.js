@@ -1,12 +1,18 @@
 import { createRequire } from 'module';
 import axios from 'axios';
 import express from 'express';
+import { injectSpeedInsights } from '@vercel/speed-insights';
 
 const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
 
 const app = express();
 app.use(express.json());
+
+// Initialize Vercel Speed Insights
+if (process.env.NODE_ENV === 'production') {
+  injectSpeedInsights();
+}
 
 // ═══════════════════════════════════════════════════
 // PDF → Related Assets Association
