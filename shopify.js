@@ -138,6 +138,8 @@ async function getEntity(entityId, contentHubBaseUrl, token) {
     `${contentHubBaseUrl}/api/entities/${entityId}`,
     { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' } }
   );
+  console.log("Get entity",contentHubBaseUrl);
+  console.log("Get entity",JSON.stringify(response.data));
   return response.data;
 }
 
