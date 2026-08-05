@@ -407,7 +407,7 @@ app.post('/shopify/publish', async (req, res) => {
 
   const saveMsg = req.body.saveEntityMessage || {};
   const entityId = req.headers['target_id'] || saveMsg.TargetId;
-  const entityDefination = req.headers['target_defination'] || '';
+  const entityDefination = req.headers['target_definition'] || '';
   const sourceSystem = req.headers['source_system'] || CONTENT_HUB_URL;
 
   console.log('✅ Entity ID:', entityId);
