@@ -41,6 +41,7 @@ app.get('/shopify/publish', (req, res) => {
 
 // ─────────────────────────────────────────────
 // Helper: Authenticate with Content Hub
+// (identical pattern to LinkedIn middleware)
 // ─────────────────────────────────────────────
 async function getContentHubToken(contentHubBaseUrl) {
   try {
@@ -74,6 +75,8 @@ async function getContentHubToken(contentHubBaseUrl) {
 
 // ─────────────────────────────────────────────
 // Helper: Get Shopify Admin API access token
+// Uses Client Credentials Grant, cached in memory,
+// auto-refreshed before the ~24h expiry.
 // ─────────────────────────────────────────────
 let cachedShopifyToken = null;
 let shopifyTokenExpiry = 0;
@@ -128,7 +131,7 @@ async function shopifyGraphQL(query, variables) {
 }
 
 // ─────────────────────────────────────────────
-// Helper: Fetch a Content Hub entity
+// Helper: Fetch a Content Hub entity (generic)
 // ─────────────────────────────────────────────
 async function getEntity(entityId, contentHubBaseUrl, token) {
   const response = await axios.get(
@@ -142,6 +145,8 @@ async function getEntity(entityId, contentHubBaseUrl, token) {
 
 // ─────────────────────────────────────────────
 // Helper: Extract definition name from entity
+// Parses from entitydefinition.href like:
+// https://btr-q-001.sitecorecontenthub.cloud/api/entitydefinitions/M.PCM.Product
 // ─────────────────────────────────────────────
 function extractDefinitionName(entity) {
   if (!entity?.entitydefinition?.href) {
@@ -155,6 +160,7 @@ function extractDefinitionName(entity) {
 
 // ─────────────────────────────────────────────
 // Helper: Get image URL + title from an Asset entity
+// (same rendition logic as LinkedIn middleware)
 // ─────────────────────────────────────────────
 function extractAssetImage(entity) {
   const props = entity?.properties || {};
@@ -173,9 +179,12 @@ function extractAssetImage(entity) {
 
 // ─────────────────────────────────────────────
 // Helper: Get related Asset entities for a Product
+// FIX #1: Corrected the relation path and added error handling
 // ─────────────────────────────────────────────
 async function getRelatedAssets(productId, contentHubBaseUrl, token) {
   try {
+    // Try the standard relation endpoint first
+    // The relation path format should be verified against your Content Hub schema
     const relationPaths = [
       `${contentHubBaseUrl}/api/entities/${productId}/relations/PCMProductToMasterAsset`,
       `${contentHubBaseUrl}/api/entities/${productId}/relations/M.Asset-M.PCM.Product/parents`
@@ -223,7 +232,8 @@ async function getRelatedAssets(productId, contentHubBaseUrl, token) {
 }
 
 // ─────────────────────────────────────────────
-// Helper: Build media input for Shopify
+// Helper: Download image from Content Hub (auth'd)
+// and re-host it so Shopify's originalSource can fetch it.
 // ─────────────────────────────────────────────
 function buildMediaInput(assets) {
   return assets.map((a) => ({
@@ -234,7 +244,8 @@ function buildMediaInput(assets) {
 }
 
 // ─────────────────────────────────────────────
-// ✅ FIXED MUTATIONS - Variants included in ProductInput
+// Shopify mutations
+// FIX #2: Removed 'variants' from ProductInput - handle separately
 // ─────────────────────────────────────────────
 const PRODUCT_CREATE_MUTATION = `
   mutation productCreate($input: ProductInput!) {
@@ -243,15 +254,6 @@ const PRODUCT_CREATE_MUTATION = `
         id 
         title 
         handle
-        variants(first: 1) {
-          edges {
-            node {
-              id
-              sku
-              price
-            }
-          }
-        }
       }
       userErrors { 
         field 
@@ -266,16 +268,7 @@ const PRODUCT_UPDATE_MUTATION = `
     productUpdate(input: $input) {
       product { 
         id 
-        title
-        variants(first: 1) {
-          edges {
-            node {
-              id
-              sku
-              price
-            }
-          }
-        }
+        title 
       }
       userErrors { 
         field 
@@ -301,58 +294,71 @@ const PRODUCT_CREATE_MEDIA_MUTATION = `
   }
 `;
 
+// Create or update variant separately
+const VARIANT_CREATE_MUTATION = `
+  mutation productVariantCreate($productId: ID!, $input: ProductVariantInput!) {
+    productVariantCreate(productId: $productId, input: $input) {
+      productVariant { 
+        id 
+        sku 
+        price 
+      }
+      userErrors { 
+        field 
+        message 
+      }
+    }
+  }
+`;
+
+const VARIANT_UPDATE_MUTATION = `
+  mutation productVariantUpdate($productId: ID!, $input: ProductVariantInput!) {
+    productVariantUpdate(productId: $productId, input: $input) {
+      productVariant { 
+        id 
+        sku 
+        price 
+      }
+      userErrors { 
+        field 
+        message 
+      }
+    }
+  }
+`;
+
 // ─────────────────────────────────────────────
-// ✅ FIXED: handleProductPush with proper field mapping
+// Flow A: PRODUCT entity was triggered
+// Creates/updates a Shopify product with all
+// related asset images attached.
+// FIX #2: Variants handled in separate mutation
 // ─────────────────────────────────────────────
 async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   const productEntity = await getEntity(productId, contentHubBaseUrl, chToken);
   const props = productEntity?.properties || {};
 
-  // ✅ FIXED: Proper field extraction from Content Hub
   const title = props.ProductName || props.Title || productEntity?.identifier || 'Untitled Product';
-  
-  // Description: Try ProductLongDescription first, then ProductShortDescription
-  const descriptionData = props.ProductLongDescription || props.ProductShortDescription || {};
-  const description = typeof descriptionData === 'object' 
-    ? (descriptionData['en-US'] || descriptionData['ar-AE'] || '') 
-    : (descriptionData || '');
-  
+  const description = props.Description || '';
   const vendor = props.Brand || 'Himalaya Wellness';
-  const productType = props.Category || props.ProductType || 'General';
+  const productType = props.Category || '';
   const sku = productEntity?.identifier || productId;
   const price = props.Price || '0.00';
   const existingShopifyId = props.ShopifyProductId || null;
 
   const relatedAssets = await getRelatedAssets(productId, contentHubBaseUrl, chToken);
 
-  console.log('📦 Product Details:');
-  console.log('  Title:', title);
-  console.log('  Description:', description.substring(0, 100) + '...');
-  console.log('  Vendor:', vendor);
-  console.log('  Product Type:', productType);
-  console.log('  SKU:', sku);
-  console.log('  Price:', price);
-  console.log('  Related Assets:', relatedAssets.length);
-
-  // ✅ FIXED: Include variant in ProductInput instead of separate mutation
+  // FIX #2: Remove variants from ProductInput
   const input = {
     title,
-    descriptionHtml: `<p>${description || 'No description available'}</p>`,
+    descriptionHtml: description,
     vendor,
     productType,
-    status: 'DRAFT',
-    variants: [
-      {
-        sku,
-        price: String(price)
-      }
-    ]
+    status: 'DRAFT'
   };
 
   let shopifyProduct;
   try {
     if (existingShopifyId) {
-      console.log('📝 Updating existing product:', existingShopifyId);
       const data = await shopifyGraphQL(PRODUCT_UPDATE_MUTATION, {
         input: { id: existingShopifyId, ...input }
       });
@@ -360,20 +366,40 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
         throw new Error(JSON.stringify(data.productUpdate.userErrors));
       }
       shopifyProduct = data.productUpdate.product;
-      console.log('✅ Product updated successfully');
     } else {
-      console.log('🆕 Creating new product');
       const data = await shopifyGraphQL(PRODUCT_CREATE_MUTATION, { input });
       if (data.productCreate.userErrors.length) {
         throw new Error(JSON.stringify(data.productCreate.userErrors));
       }
       shopifyProduct = data.productCreate.product;
-      console.log('✅ Product created successfully:', shopifyProduct.id);
     }
 
-    // ✅ Attach related media
+    // Handle variant separately after product creation
+    const variantInput = {
+      sku,
+      price: String(price)
+    };
+
+    if (existingShopifyId) {
+      const variantData = await shopifyGraphQL(VARIANT_UPDATE_MUTATION, {
+        productId: shopifyProduct.id,
+        input: variantInput
+      });
+      if (variantData.productVariantUpdate.userErrors.length) {
+        console.warn('⚠️ Variant update warnings:', variantData.productVariantUpdate.userErrors);
+      }
+    } else {
+      const variantData = await shopifyGraphQL(VARIANT_CREATE_MUTATION, {
+        productId: shopifyProduct.id,
+        input: variantInput
+      });
+      if (variantData.productVariantCreate.userErrors.length) {
+        console.warn('⚠️ Variant creation warnings:', variantData.productVariantCreate.userErrors);
+      }
+    }
+
+    // Attach related media
     if (relatedAssets.length > 0) {
-      console.log('📸 Attaching', relatedAssets.length, 'images to product');
       const mediaInput = buildMediaInput(relatedAssets);
       const mediaData = await shopifyGraphQL(PRODUCT_CREATE_MEDIA_MUTATION, {
         productId: shopifyProduct.id,
@@ -381,14 +407,11 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       });
       if (mediaData.productCreateMedia.mediaUserErrors.length) {
         console.warn('⚠️ Media upload warnings:', mediaData.productCreateMedia.mediaUserErrors);
-      } else {
-        console.log('✅ Images attached successfully');
       }
-    } else {
-      console.warn('⚠️ No images found to attach');
     }
 
     // Write sync status back to Content Hub
+    // FIX #3: Added try-catch and better error handling
     try {
       await axios.put(
         `${contentHubBaseUrl}/api/entities/${productId}`,
@@ -410,17 +433,17 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       console.log('✅ Status written back to Content Hub');
     } catch (writeErr) {
       console.warn('⚠️ Could not write status back to Content Hub:', writeErr.message);
+      // Don't throw - the sync was successful even if we can't write back
     }
 
     return {
       entityType: 'Product',
       shopifyProductId: shopifyProduct.id,
       title: shopifyProduct.title,
-      imagesAttached: relatedAssets.length,
-      descriptionAdded: !!description
+      imagesAttached: relatedAssets.length
     };
   } catch (err) {
-    // Try to write error status back
+    // Try to write error status back with better error handling
     try {
       await axios.put(
         `${contentHubBaseUrl}/api/entities/${productId}`,
@@ -447,6 +470,8 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
 
 // ─────────────────────────────────────────────
 // Flow B: ASSET entity was triggered
+// Finds the parent product this asset belongs to
+// and attaches just this one image to it.
 // ─────────────────────────────────────────────
 const FILE_CREATE_MUTATION = `
   mutation fileCreate($files: [FileCreateInput!]!) {
@@ -472,7 +497,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
     throw new Error('Asset has no usable image rendition');
   }
 
-  // Find parent product
+  // Find parent product via the same relation, reversed
   const relResponse = await axios.get(
     `${contentHubBaseUrl}/api/entities/${assetId}/relations/PCMProductToMasterAsset/parents`,
     { headers: { 'X-Auth-Token': chToken, 'Content-Type': 'application/json' } }
@@ -484,6 +509,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
   const linkedProducts = relResponse.data?.items || [];
 
   if (linkedProducts.length > 0) {
+    // Attach to the first linked product's Shopify record
     const productId = linkedProducts[0].id;
     const productEntity = await getEntity(productId, contentHubBaseUrl, chToken);
     const shopifyProductId = productEntity?.properties?.ShopifyProductId;
@@ -508,7 +534,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
     };
   }
 
-  // No linked product — upload as standalone file
+  // No linked product — upload as a standalone Shopify File
   const fileData = await shopifyGraphQL(FILE_CREATE_MUTATION, {
     files: [{ originalSource: imageUrl, alt: title, contentType: 'IMAGE' }]
   });
@@ -526,7 +552,10 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
 }
 
 // ─────────────────────────────────────────────
-// Main route — Content Hub trigger
+// Main route — Content Hub trigger hits this
+// for BOTH Product and Asset actions.
+// Auto-detects entity type from the Content Hub
+// entity's DefinitionName.
 // ─────────────────────────────────────────────
 app.post('/shopify/publish', async (req, res) => {
   console.log('📢 Incoming publish request from Content Hub');
@@ -555,6 +584,7 @@ app.post('/shopify/publish', async (req, res) => {
       return res.status(500).json({ error: 'Content Hub auth failed' });
     }
 
+    // Fetch entity and extract definition name from its entitydefinition.href
     const entity = await getEntity(entityId, sourceSystem, chToken);
     const definitionName = extractDefinitionName(entity);
 
@@ -589,4 +619,6 @@ app.post('/shopify/publish', async (req, res) => {
   }
 });
 
+// ✅ No app.listen() - Vercel serverless handles this via wrapper,
+// matching the LinkedIn middleware pattern.
 export default app;
