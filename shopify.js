@@ -138,9 +138,24 @@ async function getEntity(entityId, contentHubBaseUrl, token) {
     `${contentHubBaseUrl}/api/entities/${entityId}`,
     { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' } }
   );
-  console.log("Get entity",contentHubBaseUrl);
-  console.log("Get entity",JSON.stringify(response.data));
+  console.log("Get entity", contentHubBaseUrl);
+  console.log("Get entity", JSON.stringify(response.data));
   return response.data;
+}
+
+// ─────────────────────────────────────────────
+// Helper: Extract definition name from entity
+// Parses from entitydefinition.href like:
+// https://btr-q-001.sitecorecontenthub.cloud/api/entitydefinitions/M.PCM.Product
+// ─────────────────────────────────────────────
+function extractDefinitionName(entity) {
+  if (!entity?.entitydefinition?.href) {
+    return null;
+  }
+  
+  const href = entity.entitydefinition.href;
+  const match = href.match(/\/entitydefinitions\/(.+?)($|\/)/);
+  return match ? match[1] : null;
 }
 
 // ─────────────────────────────────────────────
@@ -406,8 +421,7 @@ app.post('/shopify/publish', async (req, res) => {
   }
 
   const saveMsg = req.body.saveEntityMessage || {};
-  const entityId = req.headers['target_id'] || saveMsg.TargetId;
-  const entityDefination = req.headers['target_definition'] || '';
+  const entityId = req.headers['target_id'] || req.body.TargetId || saveMsg.TargetId;
   const sourceSystem = req.headers['source_system'] || CONTENT_HUB_URL;
 
   console.log('✅ Entity ID:', entityId);
@@ -423,11 +437,17 @@ app.post('/shopify/publish', async (req, res) => {
       return res.status(500).json({ error: 'Content Hub auth failed' });
     }
 
-    // Determine entity type by fetching it and reading DefinitionName
+    // Fetch entity and extract definition name from its entitydefinition.href
     const entity = await getEntity(entityId, sourceSystem, chToken);
-    const definitionName = entityDefination;
+    const definitionName = extractDefinitionName(entity);
 
     console.log('✅ Definition name:', definitionName);
+
+    if (!definitionName) {
+      return res.status(400).json({
+        error: 'Could not extract definition name from entity'
+      });
+    }
 
     let result;
     if (definitionName === 'M.PCM.Product') {
