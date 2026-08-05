@@ -44,58 +44,31 @@ app.get('/shopify/publish', (req, res) => {
 // (identical pattern to LinkedIn middleware)
 // ─────────────────────────────────────────────
 async function getContentHubToken(contentHubBaseUrl) {
-
   try {
-
-    console.log("");
-    console.log("========================================");
-    console.log("🔐 Authenticating with Content Hub");
-    console.log("URL:", `${contentHubBaseUrl}/api/authenticate`);
-    console.log("User:", CONTENT_HUB_USERNAME);
-    console.log("========================================");
-
+    console.log('🔐 Authenticating with Content Hub...');
     const response = await axios.post(
       `${contentHubBaseUrl}/api/authenticate`,
       {
         user_name: CONTENT_HUB_USERNAME,
         password: CONTENT_HUB_PASSWORD
       },
-      {
-        headers: {
-          "Content-Type": "application/json"
-        }
-      }
+      { headers: { 'Content-Type': 'application/json' } }
     );
 
-    console.log("Authentication Status:", response.status);
+    const token = response.data.token
+      || response.data.access_token
+      || response.data;
 
-    const token =
-      response.data.token ||
-      response.data.access_token ||
-      response.data;
-
-    console.log("Token received:", !!token);
-
-    if (!token) {
-
-      console.error("Authentication Response:");
-      console.error(JSON.stringify(response.data, null, 2));
-
+    if (typeof token !== 'string' || token.trim().length === 0) {
+      console.error('❌ Token extraction failed:', JSON.stringify(response.data));
       return null;
     }
 
-    console.log("Token Length:", token.length);
-
+    console.log('✅ Content Hub token obtained, length:', token.length);
     return token;
 
   } catch (err) {
-
-    console.error("Authentication Failed");
-
-    console.error("Status:", err.response?.status);
-
-    console.error(JSON.stringify(err.response?.data, null, 2));
-
+    console.error('❌ Content Hub auth failed:', err.response?.status, err.message);
     return null;
   }
 }
@@ -161,49 +134,11 @@ async function shopifyGraphQL(query, variables) {
 // Helper: Fetch a Content Hub entity (generic)
 // ─────────────────────────────────────────────
 async function getEntity(entityId, contentHubBaseUrl, token) {
-  try {
-    console.log("========================================");
-    console.log("📥 Fetching Content Hub Entity");
-    console.log("Entity ID:", entityId);
-    console.log("URL:", `${contentHubBaseUrl}/api/entities/${entityId}`);
-    console.log("========================================");
-
-    const response = await axios.get(
-      `${contentHubBaseUrl}/api/entities/${entityId}`,
-      {
-        headers: {
-          "X-Auth-Token": token,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-
-    console.log("✅ Entity fetched successfully");
-    console.log("Status:", response.status);
-
-    console.log("============ ENTITY RESPONSE ============");
-    console.log(JSON.stringify(response.data, null, 2));
-    console.log("=========================================");
-
-    return response.data;
-
-  } catch (err) {
-    console.log("========================================");
-    console.error("❌ Error fetching entity");
-    console.error("Status:", err.response?.status);
-    console.error("Status Text:", err.response?.statusText);
-
-    console.error("Response:");
-    console.error(JSON.stringify(err.response?.data, null, 2));
-
-    console.error("Headers:");
-    console.error(JSON.stringify(err.response?.headers, null, 2));
-
-    console.error("Message:", err.message);
-    console.log("========================================");
-
-    throw err;
-  }
+  const response = await axios.get(
+    `${contentHubBaseUrl}/api/entities/${entityId}`,
+    { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' } }
+  );
+  return response.data;
 }
 
 // ─────────────────────────────────────────────
@@ -459,173 +394,25 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
 // entity's DefinitionName.
 // ─────────────────────────────────────────────
 app.post('/shopify/publish', async (req, res) => {
+  console.log('📢 Incoming publish request from Content Hub');
+  console.log('Body:', JSON.stringify(req.body));
 
-  console.log("");
-  console.log("========================================");
-  console.log("🚀 NEW SHOPIFY PUBLISH REQUEST");
-  console.log("========================================");
-
-  console.log("Headers:");
-  console.log(JSON.stringify(req.headers, null, 2));
-
-  console.log("");
-
-  console.log("Body:");
-  console.log(JSON.stringify(req.body, null, 2));
-
-  console.log("");
-
-  const apiKey = req.headers["x-api-key"];
-
+  const apiKey = req.headers['x-api-key'];
   if (!apiKey || apiKey !== API_SECRET_KEY) {
-    console.error("❌ Invalid API Key");
-    return res.status(401).json({
-      error: "Unauthorized"
-    });
+    console.error('❌ Unauthorized - invalid x-api-key');
+    return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  const entityId =
-      req.body.TargetId ||
-      req.body.targetId ||
-      req.body.saveEntityMessage?.TargetId ||
-      req.headers["target_id"];
+  const saveMsg = req.body.saveEntityMessage || {};
+  const entityId = req.headers['target_id'] || saveMsg.TargetId;
+  const sourceSystem = req.headers['source_system'] || CONTENT_HUB_URL;
 
-  const sourceSystem =
-      req.headers["source_system"] ||
-      CONTENT_HUB_URL;
-
-  console.log("Entity ID:", entityId);
-  console.log("Source System:", sourceSystem);
+  console.log('✅ Entity ID:', entityId);
+  console.log('✅ Source System:', sourceSystem);
 
   if (!entityId) {
-    console.error("❌ Entity ID not found");
-    return res.status(400).json({
-      error: "Entity ID not found"
-    });
+    return res.status(400).json({ error: 'No entity ID provided' });
   }
-
-  try {
-
-    const chToken = await getContentHubToken(sourceSystem);
-
-    if (!chToken) {
-      return res.status(500).json({
-        error: "Unable to authenticate with Content Hub"
-      });
-    }
-
-    console.log("");
-    console.log("Token Length:", chToken.length);
-
-    const entity = await getEntity(
-      entityId,
-      sourceSystem,
-      chToken
-    );
-
-    console.log("");
-    console.log("========== ENTITY INSPECTION ==========");
-
-    console.log("definitionName:", entity?.definitionName);
-
-    console.log("DefinitionName:", entity?.DefinitionName);
-
-    console.log("definition:", JSON.stringify(entity?.definition, null, 2));
-
-    console.log("Definition:", JSON.stringify(entity?.Definition, null, 2));
-
-    console.log("systemProperties:", JSON.stringify(entity?.systemProperties, null, 2));
-
-    console.log("properties:", JSON.stringify(entity?.properties, null, 2));
-
-    console.log("=======================================");
-
-    const definitionName =
-      entity?.definitionName ||
-      entity?.DefinitionName ||
-      entity?.definition?.name ||
-      entity?.Definition?.Name ||
-      entity?.systemProperties?.definitionName ||
-      entity?.systemProperties?.DefinitionName;
-
-    console.log("");
-    console.log("✅ Final Definition Name:", definitionName);
-
-    let result;
-
-    if (definitionName === "M.PCM.Product") {
-
-      console.log("➡️ Product detected");
-
-      result = await handleProductPush(
-        entityId,
-        sourceSystem,
-        chToken
-      );
-
-    } else if (definitionName === "M.Asset") {
-
-      console.log("➡️ Asset detected");
-
-      result = await handleAssetPush(
-        entityId,
-        sourceSystem,
-        chToken
-      );
-
-    } else {
-
-      console.error("❌ Unsupported entity type");
-
-      return res.status(400).json({
-        error: "Unsupported entity",
-        definitionName,
-        entity
-      });
-
-    }
-
-    console.log("");
-    console.log("========== SUCCESS ==========");
-    console.log(JSON.stringify(result, null, 2));
-
-    return res.json({
-      success: true,
-      result
-    });
-
-  } catch (err) {
-
-    console.log("");
-    console.log("=========== ERROR ===========");
-
-    console.error("Message:", err.message);
-
-    if (err.response) {
-      console.error("Status:", err.response.status);
-
-      console.error("Status Text:", err.response.statusText);
-
-      console.error("Headers:");
-      console.error(JSON.stringify(err.response.headers, null, 2));
-
-      console.error("Response:");
-      console.error(JSON.stringify(err.response.data, null, 2));
-    }
-
-    console.error(err.stack);
-
-    console.log("=============================");
-
-    return res.status(500).json({
-      success: false,
-      error: err.message,
-      details: err.response?.data
-    });
-
-  }
-
-});
 
   try {
     const chToken = await getContentHubToken(sourceSystem);
@@ -680,7 +467,7 @@ app.post('/shopify/publish', async (req, res) => {
       details: err.response?.data || err.message
     });
   }
-
+});
 
 // ✅ No app.listen() - Vercel serverless handles this via wrapper,
 // matching the LinkedIn middleware pattern.
