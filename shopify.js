@@ -481,24 +481,10 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
 }
 
 // ─────────────────────────────────────────────
-// Flow B: ASSET entity was triggered
+// FIX #5: Handle ASSET entity - Create product from asset
+// When an asset is published, create a new product in Shopify
+// with the asset as the product image
 // ─────────────────────────────────────────────
-const FILE_CREATE_MUTATION = `
-  mutation fileCreate($files: [FileCreateInput!]!) {
-    fileCreate(files: $files) {
-      files { 
-        id 
-        alt 
-        fileStatus 
-      }
-      userErrors { 
-        field 
-        message 
-      }
-    }
-  }
-`;
-
 async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
   const assetEntity = await getEntity(assetId, contentHubBaseUrl, chToken);
   const { title, imageUrl } = extractAssetImage(assetEntity);
@@ -507,57 +493,100 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
     throw new Error('Asset has no usable image rendition');
   }
 
-  // Find parent product
-  const relResponse = await axios.get(
-    `${contentHubBaseUrl}/api/entities/${assetId}/relations/PCMProductToMasterAsset/parents`,
-    { headers: { 'X-Auth-Token': chToken, 'Content-Type': 'application/json' } }
-  ).catch((err) => {
-    console.warn('⚠️ Could not find related products:', err.message);
-    return { data: { items: [] } };
-  });
+  console.log(`🖼️ Creating product from asset: ${title}`);
 
-  const linkedProducts = relResponse.data?.items || [];
+  // Use asset identifier or ID as SKU
+  const assetIdentifier = assetEntity?.identifier || `asset-${assetId}`;
+  const sku = assetIdentifier;
 
-  if (linkedProducts.length > 0) {
-    const productId = linkedProducts[0].id;
-    const productEntity = await getEntity(productId, contentHubBaseUrl, chToken);
-    const shopifyProductId = productEntity?.properties?.ShopifyProductId;
+  // Check if product already exists with this SKU
+  const existingProduct = await findShopifyProductBySku(sku);
 
-    if (!shopifyProductId) {
-      throw new Error(`Linked product ${productId} has not been synced to Shopify yet`);
+  // Create product input
+  const input = {
+    title: title || 'Untitled Asset Product',
+    descriptionHtml: assetEntity?.properties?.Description || 'Asset-based product',
+    vendor: 'Content Hub Asset',
+    productType: 'Asset',
+    status: 'DRAFT'
+  };
+
+  try {
+    let shopifyProduct;
+
+    if (existingProduct) {
+      console.log(`♻️ Updating existing asset product ${existingProduct.id}`);
+      const data = await shopifyGraphQL(PRODUCT_UPDATE_MUTATION, {
+        input: { id: `gid://shopify/Product/${existingProduct.id}`, ...input }
+      });
+      
+      if (data.productUpdate?.userErrors?.length) {
+        throw new Error(JSON.stringify(data.productUpdate.userErrors));
+      }
+      shopifyProduct = data.productUpdate.product;
+    } else {
+      console.log(`✨ Creating new product from asset: ${title}`);
+      const data = await shopifyGraphQL(PRODUCT_CREATE_MUTATION, { input });
+      
+      if (data.productCreate?.userErrors?.length) {
+        throw new Error(JSON.stringify(data.productCreate.userErrors));
+      }
+      shopifyProduct = data.productCreate.product;
     }
 
-    const mediaData = await shopifyGraphQL(PRODUCT_CREATE_MEDIA_MUTATION, {
-      productId: shopifyProductId,
-      media: buildMediaInput([{ title, imageUrl }])
-    });
+    // Update variant with SKU
+    if (shopifyProduct?.id) {
+      try {
+        const productGid = shopifyProduct.id;
+        const productRestId = productGid.split('/').pop();
+        
+        console.log(`📦 Updating variant for asset product ${productRestId}`);
+        const variantResult = await shopifyREST('GET', `/products/${productRestId}/variants.json`);
+        
+        if (variantResult.variants && variantResult.variants.length > 0) {
+          const defaultVariant = variantResult.variants[0];
+          
+          await shopifyREST('PUT', `/variants/${defaultVariant.id}.json`, {
+            variant: { sku }
+          });
+          
+          console.log(`✅ Variant updated: SKU=${sku}`);
+        }
+      } catch (variantErr) {
+        console.warn('⚠️ Variant update warning:', variantErr.message);
+      }
+    }
 
-    if (mediaData.productCreateMedia?.mediaUserErrors?.length) {
-      throw new Error(JSON.stringify(mediaData.productCreateMedia.mediaUserErrors));
+    // Attach the asset image to the product
+    try {
+      console.log(`🖼️ Attaching asset image to product`);
+      const mediaData = await shopifyGraphQL(PRODUCT_CREATE_MEDIA_MUTATION, {
+        productId: shopifyProduct.id,
+        media: buildMediaInput([{ title, imageUrl }])
+      });
+      
+      if (mediaData.productCreateMedia?.mediaUserErrors?.length) {
+        console.warn('⚠️ Media upload warnings:', mediaData.productCreateMedia.mediaUserErrors);
+      } else {
+        console.log(`✅ Asset image attached`);
+      }
+    } catch (mediaErr) {
+      console.warn('⚠️ Media attachment failed:', mediaErr.message);
     }
 
     return {
       entityType: 'Asset',
-      attachedToProductId: shopifyProductId,
-      title
+      shopifyProductId: shopifyProduct.id,
+      title: shopifyProduct.title,
+      assetTitle: title,
+      imageUrl,
+      isUpdate: !!existingProduct,
+      sku
     };
+  } catch (err) {
+    console.error('❌ Asset product creation failed:', err.message);
+    throw err;
   }
-
-  // No linked product — upload as standalone file
-  const fileData = await shopifyGraphQL(FILE_CREATE_MUTATION, {
-    files: [{ originalSource: imageUrl, alt: title, contentType: 'IMAGE' }]
-  });
-
-  if (fileData.fileCreate?.userErrors?.length) {
-    throw new Error(JSON.stringify(fileData.fileCreate.userErrors));
-  }
-
-  return {
-    entityType: 'Asset',
-    shopifyFileId: fileData.fileCreate.files[0]?.id,
-    title,
-    note: 'Uploaded as standalone Shopify file — no linked product found'
-  };
 }
 
 // ─────────────────────────────────────────────
