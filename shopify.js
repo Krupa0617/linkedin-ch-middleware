@@ -24,6 +24,48 @@ const {
 const SHOPIFY_VERSION = SHOPIFY_API_VERSION || '2026-07';
 
 // ─────────────────────────────────────────────
+// Webhook Deduplication - Prevent duplicate webhook processing
+// (Catches near-simultaneous/rapid duplicate calls for the SAME entityId)
+// ─────────────────────────────────────────────
+const webhookCache = new Map();
+const WEBHOOK_DEDUP_TTL = 5000; // 5 seconds
+
+function isWebhookProcessing(entityId) {
+  const key = `webhook-${entityId}`;
+
+  if (webhookCache.has(key)) {
+    const cached = webhookCache.get(key);
+    const age = Date.now() - cached.timestamp;
+
+    if (age < WEBHOOK_DEDUP_TTL) {
+      console.warn(`⚠️  Webhook for entity ${entityId} already processing (${age}ms ago)`);
+      return true;
+    }
+  }
+
+  // Mark as processing
+  webhookCache.set(key, { timestamp: Date.now(), processed: false });
+  return false;
+}
+
+function markWebhookProcessed(entityId) {
+  const key = `webhook-${entityId}`;
+  if (webhookCache.has(key)) {
+    webhookCache.get(key).processed = true;
+  }
+}
+
+// Clean up old cache entries every minute
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of webhookCache.entries()) {
+    if (now - value.timestamp > WEBHOOK_DEDUP_TTL * 2) {
+      webhookCache.delete(key);
+    }
+  }
+}, 60000);
+
+// ─────────────────────────────────────────────
 // Health check
 // ─────────────────────────────────────────────
 app.get('/', (req, res) => {
@@ -74,6 +116,7 @@ let shopifyTokenExpiry = 0;
 
 async function getShopifyAccessToken() {
   const now = Date.now();
+
   if (cachedShopifyToken && now < shopifyTokenExpiry - 60000) {
     return cachedShopifyToken;
   }
@@ -183,44 +226,75 @@ function extractAssetImage(entity) {
 }
 
 // ─────────────────────────────────────────────
-// FIX #1: Search Shopify for existing product by SKU
-// Prevents duplicate product creation
+// FIX: Search Shopify for existing product by SKU
+//
+// Previously this used REST `/products.json?status=any&limit=250`
+// and scanned the first page of products client-side. That has two
+// problems that both cause duplicate products on re-trigger:
+//   1. It only ever looks at the first 250 products (no pagination),
+//      so once the store has more than that, or the matching product
+//      isn't on the first page (sort order), the search misses it.
+//   2. It's an unindexed, expensive client-side scan.
+//
+// Fix: use Shopify's GraphQL search index directly via
+// `productVariants(query: "sku:...")`, which does an exact,
+// indexed lookup regardless of how many products/variants exist,
+// so re-triggering the same Content Hub entity reliably finds the
+// product created last time and updates it instead of creating a
+// new one.
 // ─────────────────────────────────────────────
-async function findShopifyProductBySku(sku) {
-  try {
-    console.log(`🔍 Searching Shopify for product with SKU: ${sku}`);
-    const result = await shopifyREST('GET', `/products.json?status=any`);
-
-    const products = result.products || [];
-    for (const product of products) {
-      for (const variant of product.variants || []) {
-        if (variant.sku === sku) {
-          console.log(`✅ Found existing product: ${product.id} (SKU: ${sku})`);
-          return product;
+const PRODUCT_BY_SKU_QUERY = `
+  query findProductBySku($query: String!) {
+    productVariants(first: 1, query: $query) {
+      edges {
+        node {
+          id
+          sku
+          product {
+            id
+            title
+          }
         }
       }
     }
+  }
+`;
 
-    console.log(`⚠️ No existing product found for SKU: ${sku}`);
-    return null;
+async function findShopifyProductBySku(sku) {
+  try {
+    console.log(`🔍 Searching Shopify for product with SKU: "${sku}"`);
+
+    // Escape double quotes so the search query string stays valid
+    const escapedSku = String(sku).replace(/"/g, '\\"');
+    const data = await shopifyGraphQL(PRODUCT_BY_SKU_QUERY, {
+      query: `sku:"${escapedSku}"`
+    });
+
+    const edge = data?.productVariants?.edges?.[0];
+    if (!edge) {
+      console.log(`⚠️ No existing product found for SKU: "${sku}"`);
+      return null;
+    }
+
+    const productGid = edge.node.product.id;
+    const productRestId = productGid.split('/').pop();
+
+    console.log(`✅ Found existing product: ${productRestId} (${edge.node.product.title})`);
+    return { id: productRestId, gid: productGid, title: edge.node.product.title };
   } catch (err) {
-    console.warn('⚠️ Search failed:', err.message);
+    console.warn('⚠️ Search failed:', err.response?.data ? JSON.stringify(err.response.data) : err.message);
     return null;
   }
 }
 
 // ─────────────────────────────────────────────
-// FIX #2: Fetch related assets using Content Hub Query API
-// Simple and efficient - gets all M.Asset entities linked to the product
+// Fetch related assets using Content Hub Query API
 // ─────────────────────────────────────────────
 async function getRelatedAssets(productId, contentHubBaseUrl, token) {
   try {
     console.log(`📸 Fetching related assets for product ${productId}`);
 
-    // Use Content Hub Query API to find all assets linked to this product
-    // Query: Definition.Name=='M.Asset' AND Parent('PCMProductToAsset').id==productId
     const query = `Definition.Name=='M.Asset' AND Parent('PCMProductToAsset').id==${productId}`;
-    console.log(`   📋 Query: ${query}`);
 
     const response = await axios.get(
       `${contentHubBaseUrl}/api/entities/query`,
@@ -234,12 +308,6 @@ async function getRelatedAssets(productId, contentHubBaseUrl, token) {
     const assetEntities = response.data?.items || [];
     console.log(`   ✅ Query returned ${assetEntities.length} assets`);
 
-    if (assetEntities.length === 0) {
-      console.log(`   ⚠️  No assets found for product ${productId}`);
-      return [];
-    }
-
-    // Extract image URLs directly from the asset entities (no extra fetches needed)
     const imageAssets = [];
     for (let i = 0; i < assetEntities.length; i++) {
       try {
@@ -247,22 +315,14 @@ async function getRelatedAssets(productId, contentHubBaseUrl, token) {
         const { title, imageUrl } = extractAssetImage(asset);
 
         if (imageUrl) {
-          console.log(`   Asset #${i}: ${asset.identifier} ✅`);
           imageAssets.push({ id: asset.id, title, imageUrl });
-        } else {
-          console.log(`   Asset #${i}: ${asset.identifier} (no image rendition) ⚠️`);
         }
       } catch (err) {
-        console.warn(`   Asset #${i}: Error processing -`, err.message.slice(0, 80));
+        console.warn(`⚠️ Asset #${i}: Error processing -`, err.message.slice(0, 80));
       }
     }
 
-    if (imageAssets.length === 0) {
-      console.log(`   ⚠️  No usable image URLs found in ${assetEntities.length} asset(s)`);
-    } else {
-      console.log(`   ✅ Successfully retrieved ${imageAssets.length} asset image(s)`);
-    }
-
+    console.log(`✅ Retrieved ${imageAssets.length} asset image(s)`);
     return imageAssets;
   } catch (err) {
     console.error('❌ Asset query error:', err.message);
@@ -271,7 +331,7 @@ async function getRelatedAssets(productId, contentHubBaseUrl, token) {
 }
 
 // ─────────────────────────────────────────────
-// Helper: Build Shopify media input from assets
+// Helper: Build Shopify media input
 // ─────────────────────────────────────────────
 function buildMediaInput(assets) {
   return assets.map((a) => ({
@@ -282,58 +342,7 @@ function buildMediaInput(assets) {
 }
 
 // ─────────────────────────────────────────────
-// Helper: Set product metafields using GraphQL metafieldsSet
-// Updates Content Hub ID metafields for tracking
-//
-// FIX #7: Switched from legacy REST /metafields.json to
-// GraphQL metafieldsSet. REST silently 422'd with no usable
-// error body; metafieldsSet returns real userErrors, and
-// exposed the true root cause: the metafield *definitions*
-// in Shopify admin were created as type 'number_integer',
-// but the code was sending 'single_line_text_field'.
-// metafieldType is now a parameter so each call site can
-// match its definition's actual type.
-// ─────────────────────────────────────────────
-const METAFIELDS_SET_MUTATION = `
-  mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
-    metafieldsSet(metafields: $metafields) {
-      metafields { id namespace key value }
-      userErrors { field message code }
-    }
-  }
-`;
-
-async function setProductMetafields(productGid, metafieldNamespace, metafieldKey, metafieldValue, metafieldType = 'single_line_text_field') {
-  try {
-    console.log(`📝 Setting metafield: ${metafieldKey} = ${metafieldValue} (type: ${metafieldType})`);
-
-    const data = await shopifyGraphQL(METAFIELDS_SET_MUTATION, {
-      metafields: [
-        {
-          ownerId: productGid, // full gid://shopify/Product/xxxx
-          namespace: metafieldNamespace,
-          key: metafieldKey,
-          value: String(metafieldValue),
-          type: metafieldType
-        }
-      ]
-    });
-
-    if (data.metafieldsSet?.userErrors?.length) {
-      console.warn(`⚠️ Metafield update failed for ${metafieldKey}:`, JSON.stringify(data.metafieldsSet.userErrors));
-      return false;
-    }
-
-    console.log(`✅ Metafield set successfully: ${metafieldKey}`);
-    return true;
-  } catch (err) {
-    console.warn(`⚠️ Metafield update failed for ${metafieldKey}:`, err.response?.data ? JSON.stringify(err.response.data) : err.message);
-    return false;
-  }
-}
-
-// ─────────────────────────────────────────────
-// Shopify Mutations & Queries
+// Shopify Mutations
 // ─────────────────────────────────────────────
 const PRODUCT_CREATE_MUTATION = `
   mutation productCreate($input: ProductInput!) {
@@ -381,148 +390,88 @@ const PRODUCT_CREATE_MEDIA_MUTATION = `
   }
 `;
 
-
-
 // ─────────────────────────────────────────────
-// FIX #3: Handle product creation/update
-// Creates or updates a single product with all
-// related assets as images
-//
-// FIX #4: Use Content Hub product number as SKU
-// Prioritizes the product Number field from Content Hub
+// Handle product creation/update
 // ─────────────────────────────────────────────
 async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   const productEntity = await getEntity(productId, contentHubBaseUrl, chToken);
   const props = productEntity?.properties || {};
 
   const title = props.ProductName || props.Title || productEntity?.identifier || 'Untitled Product';
-
-  // Extract description - handle both string and object types
-  let description = '';
-  const descriptionProp = props.Description || props.ProductShortDescription;
-  if (descriptionProp) {
-    if (typeof descriptionProp === 'string') {
-      description = descriptionProp;
-    } else if (typeof descriptionProp === 'object') {
-      // If it's an object (like { 'en-US': 'text' }), try to extract string value
-      if (descriptionProp['en-US']) {
-        description = descriptionProp['en-US'];
-      } else {
-        description = '';
-      }
-    }
-  }
-
-  const vendor = props.Brand || 'Himalaya Wellness';
-  const productType = props.Category || '';
-
-  // FIX #4: Use product number as primary SKU, fallback to identifier
-  // This ensures the Content Hub product number (e.g., 000800134652) is used as the Shopify SKU
-  const productNumber = props.Number || props.ProductNumber || null;
-  const identifier = productEntity?.identifier || String(productId);
-  const sku = productNumber || "Hima-" + assetId; // Fallback SKU if no product number
-
+  const sku = productEntity?.identifier || String(productId);
   const price = props.Price || '0.00';
 
-  console.log(`🎯 Processing product: ${title}`);
-  console.log(`   📌 Product Number (Content Hub): ${productNumber || 'N/A'}`);
-  console.log(`   📌 Identifier (Content Hub): ${identifier}`);
-  console.log(`   📌 SKU (Shopify): ${sku}`);
+  console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  console.log(`🎯 Product: ${title}`);
+  console.log(`📌 SKU: "${sku}"`);
+  console.log(`📌 Entity ID: ${productId}`);
+  console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
 
-  // FIX #1: Check if product already exists to prevent duplicates
   const existingProduct = await findShopifyProductBySku(sku);
-
-  // Fetch related assets BEFORE creating product
   const relatedAssets = await getRelatedAssets(productId, contentHubBaseUrl, chToken);
 
   const input = {
     title,
-    descriptionHtml: description,
-    vendor,
-    productType,
+    descriptionHtml: props.Description || '',
+    vendor: props.Brand || 'Himalaya Wellness',
+    productType: props.Category || '',
     status: 'DRAFT'
   };
 
   let shopifyProduct;
   try {
     if (existingProduct) {
-      console.log(`♻️ Updating existing product ${existingProduct.id}`);
+      console.log(`♻️  UPDATE mode - Product ${existingProduct.id} already exists`);
       const data = await shopifyGraphQL(PRODUCT_UPDATE_MUTATION, {
-        input: { id: `gid://shopify/Product/${existingProduct.id}`, ...input }
+        input: { id: existingProduct.gid, ...input }
       });
 
       if (data.productUpdate?.userErrors?.length) {
         throw new Error(JSON.stringify(data.productUpdate.userErrors));
       }
       shopifyProduct = data.productUpdate.product;
+      console.log(`✅ Product updated`);
     } else {
-      console.log(`✨ Creating new product: ${title}`);
+      console.log(`✨ CREATE mode - No existing product found`);
       const data = await shopifyGraphQL(PRODUCT_CREATE_MUTATION, { input });
 
       if (data.productCreate?.userErrors?.length) {
         throw new Error(JSON.stringify(data.productCreate.userErrors));
       }
       shopifyProduct = data.productCreate.product;
+      console.log(`✅ Product created`);
     }
 
-    // FIX #3: Update variant via REST API (more reliable than GraphQL)
+    // Set SKU on variant
     if (shopifyProduct?.id) {
       try {
-        const productGid = shopifyProduct.id;
-        const productRestId = productGid.split('/').pop();
-
-        console.log(`📦 Updating variant for product ${productRestId}`);
+        const productRestId = shopifyProduct.id.split('/').pop();
         const variantResult = await shopifyREST('GET', `/products/${productRestId}/variants.json`);
 
         if (variantResult.variants && variantResult.variants.length > 0) {
           const defaultVariant = variantResult.variants[0];
-
           await shopifyREST('PUT', `/variants/${defaultVariant.id}.json`, {
-            variant: {
-              sku,
-              price: String(price)
-            }
+            variant: { sku }
           });
-
-          console.log(`✅ Variant updated: SKU=${sku}, Price=${price}`);
+          console.log(`✅ SKU set: "${sku}"`);
         }
       } catch (variantErr) {
-        console.warn('⚠️ Variant update warning:', variantErr.message);
+        console.warn('⚠️  Variant update warning:', variantErr.message);
       }
     }
 
-    // Attach related media
+    // Attach images
     if (relatedAssets.length > 0) {
       try {
-        console.log(`🖼️ Attaching ${relatedAssets.length} images to product`);
         const mediaInput = buildMediaInput(relatedAssets);
         const mediaData = await shopifyGraphQL(PRODUCT_CREATE_MEDIA_MUTATION, {
           productId: shopifyProduct.id,
           media: mediaInput
         });
-
-        if (mediaData.productCreateMedia?.mediaUserErrors?.length) {
-          console.warn('⚠️ Media upload warnings:', mediaData.productCreateMedia.mediaUserErrors);
-        } else {
-          console.log(`✅ ${relatedAssets.length} images attached`);
-        }
+        console.log(`✅ ${relatedAssets.length} image(s) attached`);
       } catch (mediaErr) {
-        console.warn('⚠️ Media attachment failed:', mediaErr.message);
+        console.warn('⚠️  Image attachment failed:', mediaErr.message);
       }
-    }
-
-    // FIX #6 / FIX #7: Set Content Hub Product ID metafield
-    // Definition in Shopify admin is type 'number_integer' — must match exactly.
-    try {
-      await setProductMetafields(
-        shopifyProduct.id,
-        'custom',
-        'content_hub_product_id',
-        String(productId),
-        'number_integer'
-      );
-    } catch (metafieldErr) {
-      console.warn('⚠️ Could not set Content Hub Product ID metafield:', metafieldErr.message);
     }
 
     // Write sync status back to Content Hub
@@ -536,28 +485,20 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
             ShopifyLastSyncedOn: new Date().toISOString()
           }
         },
-        {
-          headers: {
-            'X-Auth-Token': chToken,
-            'Content-Type': 'application/json'
-          },
-          timeout: 5000
-        }
+        { headers: { 'X-Auth-Token': chToken, 'Content-Type': 'application/json' }, timeout: 5000 }
       );
       console.log('✅ Sync status written to Content Hub');
     } catch (writeErr) {
-      console.warn('⚠️ Could not write status to Content Hub:', writeErr.message);
+      console.warn('⚠️  Could not write status to Content Hub:', writeErr.message);
     }
 
     return {
       entityType: 'Product',
       shopifyProductId: shopifyProduct.id,
       title: shopifyProduct.title,
-      imagesAttached: relatedAssets.length,
-      isUpdate: !!existingProduct,
       sku,
-      contentHubProductId: productId,
-      metafieldSet: true
+      imagesAttached: relatedAssets.length,
+      isUpdate: !!existingProduct
     };
   } catch (err) {
     console.error('❌ Product sync failed:', err.message);
@@ -566,155 +507,147 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
 }
 
 // ─────────────────────────────────────────────
-// FIX #5: Handle ASSET entity - Create product from asset
-// When an asset is published, create a new product in Shopify
-// with the asset as the product image
+// Handle asset creation/update
 // ─────────────────────────────────────────────
 async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
   const assetEntity = await getEntity(assetId, contentHubBaseUrl, chToken);
   const { title, imageUrl } = extractAssetImage(assetEntity);
 
+  const sku = `hima${assetId}`;
+
+  console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  console.log(`🖼️  Asset: ${title}`);
+  console.log(`📌 SKU: "${sku}"`);
+  console.log(`📌 Asset ID: ${assetId}`);
+  console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
+
   if (!imageUrl) {
     throw new Error('Asset has no usable image rendition');
   }
 
-  console.log(`🖼️ Creating product from asset: ${title}`);
-
-  // Use asset identifier or ID as SKU
-  const assetIdentifier = assetEntity?.identifier || `asset-${assetId}`;
-  const sku = `hima${assetId}`;
-
-  // Check if product already exists with this SKU
   const existingProduct = await findShopifyProductBySku(sku);
 
-  // Extract description - handle both string and object types
-let description = '';
-const descriptionProp = assetEntity?.properties?.Description;
-
-if (descriptionProp) {
-  if (typeof descriptionProp === 'string') {
-    // Simple string value
-    description = descriptionProp.trim();
-  } else if (typeof descriptionProp === 'object' && Object.keys(descriptionProp).length > 0) {
-    // Object with content (like { 'en-US': 'text' })
-    if (descriptionProp['en-US']) {
-      description = descriptionProp['en-US'];
-    } else {
-      // Try to get first available language
-      const firstValue = Object.values(descriptionProp)[0];
-      if (firstValue && typeof firstValue === 'string') {
-        description = firstValue;
+  let description = '';
+  const descriptionProp = assetEntity?.properties?.Description;
+  if (descriptionProp) {
+    if (typeof descriptionProp === 'string') {
+      description = descriptionProp.trim();
+    } else if (typeof descriptionProp === 'object' && Object.keys(descriptionProp).length > 0) {
+      if (descriptionProp['en-US']) {
+        description = descriptionProp['en-US'];
+      } else {
+        const firstValue = Object.values(descriptionProp)[0];
+        if (firstValue && typeof firstValue === 'string') {
+          description = firstValue;
+        }
       }
     }
   }
-}
-  // Create product input
+
   const input = {
-    title: title || 'Untitled Asset Product',
+    title: title || 'Asset Product',
     descriptionHtml: description,
     vendor: 'Himalaya Wellness',
     status: 'DRAFT'
   };
 
+  let shopifyProduct;
   try {
-    let shopifyProduct;
-
     if (existingProduct) {
-      console.log(`♻️ Updating existing asset product ${existingProduct.id}`);
+      console.log(`♻️  UPDATE mode - Product ${existingProduct.id} already exists`);
       const data = await shopifyGraphQL(PRODUCT_UPDATE_MUTATION, {
-        input: { id: `gid://shopify/Product/${existingProduct.id}`, ...input }
+        input: { id: existingProduct.gid, ...input }
       });
 
       if (data.productUpdate?.userErrors?.length) {
         throw new Error(JSON.stringify(data.productUpdate.userErrors));
       }
       shopifyProduct = data.productUpdate.product;
+      console.log(`✅ Product updated`);
     } else {
-      console.log(`✨ Creating new product from asset: ${title}`);
+      console.log(`✨ CREATE mode - No existing product found`);
       const data = await shopifyGraphQL(PRODUCT_CREATE_MUTATION, { input });
 
       if (data.productCreate?.userErrors?.length) {
         throw new Error(JSON.stringify(data.productCreate.userErrors));
       }
       shopifyProduct = data.productCreate.product;
+      console.log(`✅ Product created`);
     }
 
-    // Update variant with SKU
+    // Set SKU on variant
     if (shopifyProduct?.id) {
       try {
-        const productGid = shopifyProduct.id;
-        const productRestId = productGid.split('/').pop();
-
-        console.log(`📦 Updating variant for asset product ${productRestId}`);
+        const productRestId = shopifyProduct.id.split('/').pop();
         const variantResult = await shopifyREST('GET', `/products/${productRestId}/variants.json`);
 
         if (variantResult.variants && variantResult.variants.length > 0) {
           const defaultVariant = variantResult.variants[0];
-
           await shopifyREST('PUT', `/variants/${defaultVariant.id}.json`, {
             variant: { sku }
           });
-
-          console.log(`✅ Variant updated: SKU=${sku}`);
+          console.log(`✅ SKU set: "${sku}"`);
         }
       } catch (variantErr) {
-        console.warn('⚠️ Variant update warning:', variantErr.message);
+        console.warn('⚠️  Variant update warning:', variantErr.message);
       }
     }
 
-    // Attach the asset image to the product
-    try {
-      console.log(`🖼️ Attaching asset image to product`);
-      const mediaData = await shopifyGraphQL(PRODUCT_CREATE_MEDIA_MUTATION, {
-        productId: shopifyProduct.id,
-        media: buildMediaInput([{ title, imageUrl }])
-      });
-
-      if (mediaData.productCreateMedia?.mediaUserErrors?.length) {
-        console.warn('⚠️ Media upload warnings:', mediaData.productCreateMedia.mediaUserErrors);
-      } else {
-        console.log(`✅ Asset image attached`);
+    // Attach image
+    if (imageUrl) {
+      try {
+        const mediaData = await shopifyGraphQL(PRODUCT_CREATE_MEDIA_MUTATION, {
+          productId: shopifyProduct.id,
+          media: [{
+            originalSource: imageUrl,
+            alt: title || 'Product image',
+            mediaContentType: 'IMAGE'
+          }]
+        });
+        console.log(`✅ Image attached`);
+      } catch (mediaErr) {
+        console.warn('⚠️  Image attachment failed:', mediaErr.message);
       }
-    } catch (mediaErr) {
-      console.warn('⚠️ Media attachment failed:', mediaErr.message);
     }
 
-    // FIX #6 / FIX #7: Set Content Hub Asset ID metafield
-    // Definition in Shopify admin is type 'number_integer' — must match exactly.
+    // Write sync status back to Content Hub
     try {
-      await setProductMetafields(
-        shopifyProduct.id,
-        'custom',
-        'sitecore_content_hub_asset_id',
-        String(assetId),
-        'number_integer'
+      await axios.put(
+        `${contentHubBaseUrl}/api/entities/${assetId}`,
+        {
+          properties: {
+            ShopifyProductId: shopifyProduct.id,
+            ShopifySyncStatus: 'Synced',
+            ShopifyLastSyncedOn: new Date().toISOString()
+          }
+        },
+        { headers: { 'X-Auth-Token': chToken, 'Content-Type': 'application/json' }, timeout: 5000 }
       );
-    } catch (metafieldErr) {
-      console.warn('⚠️ Could not set Content Hub Asset ID metafield:', metafieldErr.message);
+      console.log('✅ Sync status written to Content Hub');
+    } catch (writeErr) {
+      console.warn('⚠️  Could not write status to Content Hub:', writeErr.message);
     }
 
     return {
       entityType: 'Asset',
       shopifyProductId: shopifyProduct.id,
       title: shopifyProduct.title,
-      assetTitle: title,
-      imageUrl,
-      isUpdate: !!existingProduct,
       sku,
-      contentHubAssetId: assetId,
-      metafieldSet: true
+      imagesAttached: imageUrl ? 1 : 0,
+      isUpdate: !!existingProduct
     };
   } catch (err) {
-    console.error('❌ Asset product creation failed:', err.message);
+    console.error('❌ Asset sync failed:', err.message);
     throw err;
   }
 }
 
 // ─────────────────────────────────────────────
-// Main route — Handles Product and Asset entities
+// Main route
 // ─────────────────────────────────────────────
 app.post('/shopify/publish', async (req, res) => {
-  console.log('📢 Incoming publish request from Content Hub');
+  const webhookId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  console.log(`\n🔔 WEBHOOK RECEIVED [${webhookId}]`);
 
   const apiKey = req.headers['x-api-key'];
   if (!apiKey || apiKey !== API_SECRET_KEY) {
@@ -725,10 +658,22 @@ app.post('/shopify/publish', async (req, res) => {
   const entityId = req.headers['target_id'] || req.body.TargetId;
   const sourceSystem = req.headers['source_system'] || CONTENT_HUB_URL;
 
-  console.log('✅ Entity ID:', entityId);
+  console.log(`✅ Entity ID: ${entityId}`);
+  console.log(`✅ Webhook ID: ${webhookId}`);
 
   if (!entityId) {
     return res.status(400).json({ error: 'No entity ID provided' });
+  }
+
+  // ─────────────────────────────────────────────
+  // Check if webhook already processing (near-simultaneous duplicates)
+  // ─────────────────────────────────────────────
+  if (isWebhookProcessing(entityId)) {
+    console.warn(`⚠️  Duplicate webhook ignored - already processing`);
+    return res.status(202).json({
+      error: 'Webhook already processing',
+      message: 'Duplicate webhook call ignored to prevent duplicate products'
+    });
   }
 
   try {
@@ -740,7 +685,7 @@ app.post('/shopify/publish', async (req, res) => {
     const entity = await getEntity(entityId, sourceSystem, chToken);
     const definitionName = extractDefinitionName(entity);
 
-    console.log('✅ Definition name:', definitionName);
+    console.log(`✅ Definition: ${definitionName}`);
 
     if (!definitionName) {
       return res.status(400).json({ error: 'Could not extract definition name from entity' });
@@ -753,17 +698,19 @@ app.post('/shopify/publish', async (req, res) => {
       result = await handleAssetPush(entityId, sourceSystem, chToken);
     } else {
       return res.status(400).json({
-        error: `Unsupported entity type: ${definitionName}. Expected M.PCM.Product or M.Asset.`
+        error: `Unsupported entity type: ${definitionName}`
       });
     }
 
-    console.log('✅ Shopify push complete:', result);
-    res.json({ success: true, ...result });
+    markWebhookProcessed(entityId);
+    console.log(`\n✅ SUCCESS [${webhookId}]`);
+    res.json({ success: true, webhookId, ...result });
 
   } catch (err) {
-    console.error('❌ Shopify publish failed:', err.message);
+    console.error(`\n❌ FAILED [${webhookId}]:`, err.message);
     res.status(500).json({
       error: 'Shopify publish failed',
+      webhookId,
       details: err.message
     });
   }
