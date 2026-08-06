@@ -285,29 +285,40 @@ function buildMediaInput(assets) {
 // Helper: Set product metafields using REST API
 // Updates Content Hub ID metafields for tracking
 // ─────────────────────────────────────────────
+const METAFIELDS_SET_MUTATION = `
+  mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+    metafieldsSet(metafields: $metafields) {
+      metafields { id namespace key value }
+      userErrors { field message code }
+    }
+  }
+`;
+
 async function setProductMetafields(productGid, metafieldNamespace, metafieldKey, metafieldValue) {
   try {
     console.log(`📝 Setting metafield: ${metafieldKey} = ${metafieldValue}`);
-    
-    // Extract product ID from GID (gid://shopify/Product/123456 -> 123456)
-    const productId = productGid.split('/').pop();
-    
-    // Use REST API to set metafield
-    const metafieldData = {
-      metafield: {
-        namespace: metafieldNamespace,
-        key: metafieldKey,
-        value: metafieldValue,
-        type: 'single_line_text_field'
-      }
-    };
-    
-    await shopifyREST('POST', `/products/${productId}/metafields.json`, metafieldData);
-    
+
+    const data = await shopifyGraphQL(METAFIELDS_SET_MUTATION, {
+      metafields: [
+        {
+          ownerId: productGid, // full gid://shopify/Product/xxxx — no need to split it
+          namespace: metafieldNamespace,
+          key: metafieldKey,
+          value: String(metafieldValue),
+          type: 'single_line_text_field'
+        }
+      ]
+    });
+
+    if (data.metafieldsSet?.userErrors?.length) {
+      console.warn(`⚠️ Metafield update failed for ${metafieldKey}:`, JSON.stringify(data.metafieldsSet.userErrors));
+      return false;
+    }
+
     console.log(`✅ Metafield set successfully: ${metafieldKey}`);
     return true;
   } catch (err) {
-    console.warn(`⚠️ Metafield update failed for ${metafieldKey}:`, err.message);
+    console.warn(`⚠️ Metafield update failed for ${metafieldKey}:`, err.response?.data ? JSON.stringify(err.response.data) : err.message);
     return false;
   }
 }
