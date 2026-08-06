@@ -334,6 +334,9 @@ const PRODUCT_CREATE_MEDIA_MUTATION = `
 // FIX #3: Handle product creation/update
 // Creates or updates a single product with all
 // related assets as images
+//
+// FIX #4: Use Content Hub product number as SKU
+// Prioritizes the product Number field from Content Hub
 // ─────────────────────────────────────────────
 async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   const productEntity = await getEntity(productId, contentHubBaseUrl, chToken);
@@ -343,10 +346,19 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   const description = props.Description || props.ProductShortDescription?.['en-US'] || '';
   const vendor = props.Brand || 'Himalaya Wellness';
   const productType = props.Category || '';
-  const sku = productEntity?.identifier || String(productId);
+  
+  // FIX #4: Use product number as primary SKU, fallback to identifier
+  // This ensures the Content Hub product number (e.g., 000800134652) is used as the Shopify SKU
+  const productNumber = props.Number || props.ProductNumber || null;
+  const identifier = productEntity?.identifier || String(productId);
+  const sku = productNumber || identifier;
+  
   const price = props.Price || '0.00';
 
-  console.log(`🎯 Processing product: ${title} (SKU: ${sku})`);
+  console.log(`🎯 Processing product: ${title}`);
+  console.log(`   📌 Product Number (Content Hub): ${productNumber || 'N/A'}`);
+  console.log(`   📌 Identifier (Content Hub): ${identifier}`);
+  console.log(`   📌 SKU (Shopify): ${sku}`);
 
   // FIX #1: Check if product already exists to prevent duplicates
   const existingProduct = await findShopifyProductBySku(sku);
