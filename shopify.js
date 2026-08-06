@@ -282,25 +282,33 @@ function buildMediaInput(assets) {
 }
 
 // ─────────────────────────────────────────────
-// Helper: Set product metafields
+// Helper: Set product metafields using REST API
 // Updates Content Hub ID metafields for tracking
 // ─────────────────────────────────────────────
-async function setProductMetafields(productId, metafieldInput) {
+async function setProductMetafields(productGid, metafieldNamespace, metafieldKey, metafieldValue) {
   try {
-    console.log(`📝 Setting metafields for product ${productId}`);
+    console.log(`📝 Setting metafield: ${metafieldKey} = ${metafieldValue}`);
     
-    const data = await shopifyGraphQL(METAFIELDS_SET_MUTATION, { input: metafieldInput });
+    // Extract product ID from GID (gid://shopify/Product/123456 -> 123456)
+    const productId = productGid.split('/').pop();
     
-    if (data.metafieldsSet?.userErrors?.length) {
-      console.warn('⚠️ Metafield warnings:', data.metafieldsSet.userErrors);
-    } else {
-      console.log(`✅ Metafields updated successfully`);
-    }
+    // Use REST API to set metafield
+    const metafieldData = {
+      metafield: {
+        namespace: metafieldNamespace,
+        key: metafieldKey,
+        value: metafieldValue,
+        type: 'single_line_text_field'
+      }
+    };
     
-    return data.metafieldsSet?.metafields || [];
+    await shopifyREST('POST', `/products/${productId}/metafields.json`, metafieldData);
+    
+    console.log(`✅ Metafield set successfully: ${metafieldKey}`);
+    return true;
   } catch (err) {
-    console.warn('⚠️ Metafield update failed:', err.message);
-    return [];
+    console.warn(`⚠️ Metafield update failed for ${metafieldKey}:`, err.message);
+    return false;
   }
 }
 
@@ -353,22 +361,7 @@ const PRODUCT_CREATE_MEDIA_MUTATION = `
   }
 `;
 
-const METAFIELDS_SET_MUTATION = `
-  mutation metafieldsSet($input: [MetafieldsSetInput!]!) {
-    metafieldsSet(input: $input) {
-      metafields { 
-        id 
-        namespace 
-        key 
-        value 
-      }
-      userErrors { 
-        field 
-        message 
-      }
-    }
-  }
-`;
+
 
 // ─────────────────────────────────────────────
 // FIX #3: Handle product creation/update
@@ -500,15 +493,12 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
 
     // FIX #6: Set Content Hub Product ID metafield
     try {
-      await setProductMetafields(shopifyProduct.id, [
-        {
-          ownerId: shopifyProduct.id,
-          namespace: 'custom',
-          key: 'sitecore_content_hub_product_id',
-          type: 'single_line_text_field',
-          value: String(productId)
-        }
-      ]);
+      await setProductMetafields(
+        shopifyProduct.id,
+        'custom',
+        'content_hub_product_id',
+        String(productId)
+      );
     } catch (metafieldErr) {
       console.warn('⚠️ Could not set Content Hub Product ID metafield:', metafieldErr.message);
     }
@@ -665,15 +655,12 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
 
     // FIX #6: Set Content Hub Asset ID metafield
     try {
-      await setProductMetafields(shopifyProduct.id, [
-        {
-          ownerId: shopifyProduct.id,
-          namespace: 'custom',
-          key: 'sitecore_content_hub_asset_id',
-          type: 'single_line_text_field',
-          value: String(assetId)
-        }
-      ]);
+      await setProductMetafields(
+        shopifyProduct.id,
+        'custom',
+        'sitecore_content_hub_asset_id',
+        String(assetId)
+      );
     } catch (metafieldErr) {
       console.warn('⚠️ Could not set Content Hub Asset ID metafield:', metafieldErr.message);
     }
