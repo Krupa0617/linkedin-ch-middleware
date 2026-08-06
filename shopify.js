@@ -613,7 +613,6 @@ if (descriptionProp) {
     title: title || 'Untitled Asset Product',
     descriptionHtml: description,
     vendor: 'Himalaya Wellness',
-    productType: 'Asset',
     status: 'DRAFT'
   };
 
