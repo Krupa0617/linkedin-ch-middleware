@@ -548,12 +548,12 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   // FIX #10: Improved description extraction - check multiple fields
   let description = '';
   
-  // Priority 1: ProductShortDescription (if localized)
-  if (props.ProductShortDescription) {
-    if (typeof props.ProductShortDescription === 'string') {
-      description = props.ProductShortDescription;
-    } else if (typeof props.ProductShortDescription === 'object' && props.ProductShortDescription['en-US']) {
-      description = props.ProductShortDescription['en-US'];
+  // Priority 1: ProductLongDescription (if localized)
+  if (props.ProductLongDescription) {
+    if (typeof props.ProductLongDescription === 'string') {
+      description = props.ProductLongDescription;
+    } else if (typeof props.ProductLongDescription === 'object' && props.ProductLongDescription['en-US']) {
+      description = props.ProductLongDescription['en-US'];
     }
   }
   // Priority 2: Description field
