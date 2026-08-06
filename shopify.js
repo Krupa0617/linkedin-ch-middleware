@@ -210,150 +210,62 @@ async function findShopifyProductBySku(sku) {
 }
 
 // ─────────────────────────────────────────────
-// FIX #2: Fetch related assets - ENHANCED
-// Handles multiple relation structures that Content Hub might return
+// FIX #2: Fetch related assets using Content Hub Query API
+// Simple and efficient - gets all M.Asset entities linked to the product
 // ─────────────────────────────────────────────
 async function getRelatedAssets(productId, contentHubBaseUrl, token) {
   try {
     console.log(`📸 Fetching related assets for product ${productId}`);
     
-    // First, fetch the product entity to inspect relations
-    const productResponse = await axios.get(
-      `${contentHubBaseUrl}/api/entities/${productId}`,
-      { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' }, timeout: 5000 }
+    // Use Content Hub Query API to find all assets linked to this product
+    // Query: Definition.Name=='M.Asset' AND Parent('PCMProductToAsset').id==productId
+    const query = `Definition.Name=='M.Asset' AND Parent('PCMProductToAsset').id==${productId}`;
+    console.log(`   📋 Query: ${query}`);
+    
+    const response = await axios.get(
+      `${contentHubBaseUrl}/api/entities/query`,
+      {
+        params: { query },
+        headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' },
+        timeout: 10000
+      }
     );
     
-    const relations = productResponse.data.relations || {};
-    console.log(`   Found ${Object.keys(relations).length} relations on product`);
+    const assetEntities = response.data?.items || [];
+    console.log(`   ✅ Query returned ${assetEntities.length} assets`);
     
-    let assetSummaries = [];
-    let successPath = null;
-    
-    // Try asset-related relations in order of likelihood
-    const assetRelationNames = [
-      'PCMProductToMasterAsset',
-      'M.Asset-M.PCM.Product',
-      'PCMProductToAsset',
-      'M.PCM.Product_M.Asset'
-    ];
-    
-    for (const relationName of assetRelationNames) {
-      if (!relations[relationName]) {
-        console.log(`   ⏭️  Skipping ${relationName} (not on this product)`);
-        continue;
-      }
-      
-      const relationHref = relations[relationName].href;
-      console.log(`\n   🔗 Testing relation: ${relationName}`);
-      console.log(`      Href: ${relationHref}`);
-      
-      // Try multiple endpoint variations
-      const endpoints = [
-        { url: relationHref, suffix: 'direct' },
-        { url: `${relationHref}/children`, suffix: '/children' },
-        { url: `${relationHref}/parents`, suffix: '/parents' }
-      ];
-      
-      for (const endpoint of endpoints) {
-        try {
-          console.log(`      Trying: ${endpoint.suffix}...`);
-          const response = await axios.get(
-            endpoint.url,
-            { 
-              headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' },
-              timeout: 5000
-            }
-          );
-          
-          // Handle different response structures
-          let items = [];
-          
-          if (Array.isArray(response.data)) {
-            items = response.data;
-          } else if (response.data?.items && Array.isArray(response.data.items)) {
-            items = response.data.items;
-          } else if (response.data?.children && Array.isArray(response.data.children)) {
-            items = response.data.children;
-          } else if (response.data?.parents && Array.isArray(response.data.parents)) {
-            items = response.data.parents;
-          } else if (response.data?.id) {
-            // Single item response
-            items = [response.data];
-          }
-          
-          if (items.length > 0) {
-            console.log(`      ✅ Success! Found ${items.length} items`);
-            assetSummaries = items;
-            successPath = `${relationName}${endpoint.suffix}`;
-            break;
-          } else {
-            console.log(`      ⚠️  Endpoint responded but no items found`);
-          }
-        } catch (e) {
-          const status = e.response?.status || e.code;
-          console.log(`      ❌ Failed (${status})`);
-        }
-      }
-      
-      if (assetSummaries.length > 0) {
-        break; // Success, stop trying other relations
-      }
-    }
-    
-    if (assetSummaries.length === 0) {
-      console.log(`\n   ⚠️  No assets found via any relation path`);
+    if (assetEntities.length === 0) {
+      console.log(`   ⚠️  No assets found for product ${productId}`);
       return [];
     }
-
-    console.log(`\n   📋 Processing ${assetSummaries.length} asset summaries via: ${successPath}`);
     
-    const assets = [];
-    for (let i = 0; i < assetSummaries.length; i++) {
+    // Extract image URLs directly from the asset entities (no extra fetches needed)
+    const imageAssets = [];
+    for (let i = 0; i < assetEntities.length; i++) {
       try {
-        const summary = assetSummaries[i];
-        
-        // FIX: Extract ID from multiple possible locations
-        let assetId = summary.id || summary.entityId || summary.entity_id;
-        
-        // If no direct ID, try to extract from href URL
-        if (!assetId && summary.href) {
-          const hrefMatch = summary.href.match(/\/entities\/(\d+)$/);
-          if (hrefMatch) {
-            assetId = hrefMatch[1];
-            console.log(`      ℹ️  Asset #${i}: Extracted ID ${assetId} from href`);
-          }
-        }
-        
-        if (!assetId) {
-          console.warn(`      ⚠️  Asset #${i} - could not extract id. Keys: ${Object.keys(summary).join(', ')}`);
-          console.warn(`         Data: ${JSON.stringify(summary).slice(0, 150)}`);
-          continue;
-        }
-        
-        console.log(`      Asset #${i}: Fetching entity ${assetId}...`);
-        const assetEntity = await getEntity(assetId, contentHubBaseUrl, token);
-        const { title, imageUrl } = extractAssetImage(assetEntity);
+        const asset = assetEntities[i];
+        const { title, imageUrl } = extractAssetImage(asset);
         
         if (imageUrl) {
-          console.log(`         ✅ Image found: ${imageUrl.slice(0, 80)}...`);
-          assets.push({ id: assetId, title, imageUrl });
+          console.log(`   Asset #${i}: ${asset.identifier} ✅`);
+          imageAssets.push({ id: asset.id, title, imageUrl });
         } else {
-          console.log(`         ⚠️  No image URL found (renditions: ${Object.keys(assetEntity?.renditions || {})})`);
+          console.log(`   Asset #${i}: ${asset.identifier} (no image rendition) ⚠️`);
         }
-      } catch (assetErr) {
-        console.warn(`      ⚠️  Failed to fetch asset:`, assetErr.message.slice(0, 100));
+      } catch (err) {
+        console.warn(`   Asset #${i}: Error processing -`, err.message.slice(0, 80));
       }
     }
-
-    if (assets.length === 0) {
-      console.log(`\n   ⚠️  Assets found but none had usable image URLs`);
+    
+    if (imageAssets.length === 0) {
+      console.log(`   ⚠️  No usable image URLs found in ${assetEntities.length} asset(s)`);
     } else {
-      console.log(`\n   ✅ Successfully retrieved ${assets.length} asset image(s)`);
+      console.log(`   ✅ Successfully retrieved ${imageAssets.length} asset image(s)`);
     }
     
-    return assets;
+    return imageAssets;
   } catch (err) {
-    console.error('❌ Asset fetching error:', err.message);
+    console.error('❌ Asset query error:', err.message);
     return [];
   }
 }
