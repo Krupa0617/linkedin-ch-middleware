@@ -2,6 +2,8 @@ import dotenv from 'dotenv';
 import express from 'express';
 import axios from 'axios';
 import cors from 'cors';
+import fs from 'fs';
+import path from 'path';
 
 dotenv.config();
 
@@ -18,10 +20,71 @@ const {
   SHOPIFY_STORE_DOMAIN,
   SHOPIFY_CLIENT_ID,
   SHOPIFY_CLIENT_SECRET,
-  SHOPIFY_API_VERSION
+  SHOPIFY_API_VERSION,
+  DATA_DIR
 } = process.env;
 
 const SHOPIFY_VERSION = SHOPIFY_API_VERSION || '2026-07';
+
+// ─────────────────────────────────────────────
+// FIX: Persistent Content Hub entity → Shopify product mapping
+//
+// Root cause of the duplicate-on-retrigger bug: dedup was relying
+// on Shopify's GraphQL search index (`productVariants(query:
+// "sku:...")`). That index is EVENTUALLY CONSISTENT — a just-created
+// product can take several seconds to a couple of minutes before it's
+// searchable. Re-triggering the same entity quickly hits the gap and
+// the search comes back empty, so a duplicate product gets created.
+//
+// Fix: keep our own local map of contentHubEntityId -> Shopify
+// product GID, persisted to disk. On each webhook, check this map
+// first and fetch the product DIRECTLY BY ID (a real-time read, not
+// a search index — no consistency delay) to decide create vs. update.
+// Falls back to the SKU search only when there's no local mapping yet
+// (e.g. first run, or the data file was lost) — matching the previous
+// behavior for pre-existing products.
+// ─────────────────────────────────────────────
+const DATA_DIRECTORY = DATA_DIR || path.join(process.cwd(), 'data');
+const MAP_FILE = path.join(DATA_DIRECTORY, 'entity-product-map.json');
+
+function loadEntityProductMap() {
+  try {
+    if (fs.existsSync(MAP_FILE)) {
+      const raw = fs.readFileSync(MAP_FILE, 'utf-8');
+      return JSON.parse(raw);
+    }
+  } catch (err) {
+    console.warn('⚠️  Could not load entity-product map, starting fresh:', err.message);
+  }
+  return {};
+}
+
+function saveEntityProductMap(map) {
+  try {
+    if (!fs.existsSync(DATA_DIRECTORY)) {
+      fs.mkdirSync(DATA_DIRECTORY, { recursive: true });
+    }
+    fs.writeFileSync(MAP_FILE, JSON.stringify(map, null, 2));
+  } catch (err) {
+    console.warn('⚠️  Could not persist entity-product map:', err.message);
+  }
+}
+
+let entityProductMap = loadEntityProductMap();
+
+function getMappedProductGid(mapKey) {
+  return entityProductMap[String(mapKey)] || null;
+}
+
+function setMappedProductGid(mapKey, productGid) {
+  entityProductMap[String(mapKey)] = productGid;
+  saveEntityProductMap(entityProductMap);
+}
+
+function clearMappedProductGid(mapKey) {
+  delete entityProductMap[String(mapKey)];
+  saveEntityProductMap(entityProductMap);
+}
 
 // ─────────────────────────────────────────────
 // Webhook Deduplication - Prevent duplicate webhook processing
@@ -226,22 +289,31 @@ function extractAssetImage(entity) {
 }
 
 // ─────────────────────────────────────────────
-// FIX: Search Shopify for existing product by SKU
-//
-// Previously this used REST `/products.json?status=any&limit=250`
-// and scanned the first page of products client-side. That has two
-// problems that both cause duplicate products on re-trigger:
-//   1. It only ever looks at the first 250 products (no pagination),
-//      so once the store has more than that, or the matching product
-//      isn't on the first page (sort order), the search misses it.
-//   2. It's an unindexed, expensive client-side scan.
-//
-// Fix: use Shopify's GraphQL search index directly via
-// `productVariants(query: "sku:...")`, which does an exact,
-// indexed lookup regardless of how many products/variants exist,
-// so re-triggering the same Content Hub entity reliably finds the
-// product created last time and updates it instead of creating a
-// new one.
+// Direct, real-time product lookup by GID (no search-index lag)
+// ─────────────────────────────────────────────
+const PRODUCT_BY_ID_QUERY = `
+  query getProductById($id: ID!) {
+    product(id: $id) {
+      id
+      title
+    }
+  }
+`;
+
+async function getShopifyProductById(productGid) {
+  try {
+    const data = await shopifyGraphQL(PRODUCT_BY_ID_QUERY, { id: productGid });
+    return data?.product || null; // null if deleted / doesn't exist
+  } catch (err) {
+    console.warn('⚠️  Direct product lookup failed:', err.response?.data ? JSON.stringify(err.response.data) : err.message);
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────
+// SKU search — fallback only (subject to Shopify's search-index lag).
+// Used when there's no local mapping yet, e.g. the very first sync,
+// or products that existed before this mapping was introduced.
 // ─────────────────────────────────────────────
 const PRODUCT_BY_SKU_QUERY = `
   query findProductBySku($query: String!) {
@@ -262,9 +334,8 @@ const PRODUCT_BY_SKU_QUERY = `
 
 async function findShopifyProductBySku(sku) {
   try {
-    console.log(`🔍 Searching Shopify for product with SKU: "${sku}"`);
+    console.log(`🔍 [fallback] Searching Shopify for product with SKU: "${sku}"`);
 
-    // Escape double quotes so the search query string stays valid
     const escapedSku = String(sku).replace(/"/g, '\\"');
     const data = await shopifyGraphQL(PRODUCT_BY_SKU_QUERY, {
       query: `sku:"${escapedSku}"`
@@ -279,12 +350,39 @@ async function findShopifyProductBySku(sku) {
     const productGid = edge.node.product.id;
     const productRestId = productGid.split('/').pop();
 
-    console.log(`✅ Found existing product: ${productRestId} (${edge.node.product.title})`);
+    console.log(`✅ Found existing product via SKU search: ${productRestId} (${edge.node.product.title})`);
     return { id: productRestId, gid: productGid, title: edge.node.product.title };
   } catch (err) {
-    console.warn('⚠️ Search failed:', err.response?.data ? JSON.stringify(err.response.data) : err.message);
+    console.warn('⚠️ SKU search failed:', err.response?.data ? JSON.stringify(err.response.data) : err.message);
     return null;
   }
+}
+
+// ─────────────────────────────────────────────
+// Combined lookup: local map (authoritative, instant) → SKU search (fallback)
+//
+// mapKey should be a stable, unique key for the Content Hub entity,
+// e.g. `product-${productId}` or `asset-${assetId}`.
+// ─────────────────────────────────────────────
+async function findExistingShopifyProduct(mapKey, sku) {
+  const mappedGid = getMappedProductGid(mapKey);
+
+  if (mappedGid) {
+    console.log(`🗺️  Found local mapping for "${mapKey}" -> ${mappedGid}, verifying it still exists...`);
+    const product = await getShopifyProductById(mappedGid);
+
+    if (product) {
+      const productRestId = product.id.split('/').pop();
+      console.log(`✅ Confirmed existing product: ${productRestId} (${product.title})`);
+      return { id: productRestId, gid: product.id, title: product.title };
+    }
+
+    console.warn(`⚠️  Mapped product ${mappedGid} no longer exists in Shopify (deleted?) — clearing stale mapping`);
+    clearMappedProductGid(mapKey);
+    // fall through to SKU search below
+  }
+
+  return findShopifyProductBySku(sku);
 }
 
 // ─────────────────────────────────────────────
@@ -400,6 +498,7 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   const title = props.ProductName || props.Title || productEntity?.identifier || 'Untitled Product';
   const sku = productEntity?.identifier || String(productId);
   const price = props.Price || '0.00';
+  const mapKey = `product-${productId}`;
 
   console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
   console.log(`🎯 Product: ${title}`);
@@ -407,7 +506,7 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   console.log(`📌 Entity ID: ${productId}`);
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
 
-  const existingProduct = await findShopifyProductBySku(sku);
+  const existingProduct = await findExistingShopifyProduct(mapKey, sku);
   const relatedAssets = await getRelatedAssets(productId, contentHubBaseUrl, chToken);
 
   const input = {
@@ -440,6 +539,12 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       }
       shopifyProduct = data.productCreate.product;
       console.log(`✅ Product created`);
+    }
+
+    // Persist the mapping immediately — this is what makes the very
+    // next retrigger safe even if Shopify's search index hasn't caught up.
+    if (shopifyProduct?.id) {
+      setMappedProductGid(mapKey, shopifyProduct.id);
     }
 
     // Set SKU on variant
@@ -514,6 +619,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
   const { title, imageUrl } = extractAssetImage(assetEntity);
 
   const sku = `hima${assetId}`;
+  const mapKey = `asset-${assetId}`;
 
   console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
   console.log(`🖼️  Asset: ${title}`);
@@ -525,7 +631,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
     throw new Error('Asset has no usable image rendition');
   }
 
-  const existingProduct = await findShopifyProductBySku(sku);
+  const existingProduct = await findExistingShopifyProduct(mapKey, sku);
 
   let description = '';
   const descriptionProp = assetEntity?.properties?.Description;
@@ -573,6 +679,11 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
       }
       shopifyProduct = data.productCreate.product;
       console.log(`✅ Product created`);
+    }
+
+    // Persist the mapping immediately.
+    if (shopifyProduct?.id) {
+      setMappedProductGid(mapKey, shopifyProduct.id);
     }
 
     // Set SKU on variant
