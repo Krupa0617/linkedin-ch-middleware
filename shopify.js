@@ -190,7 +190,7 @@ async function findShopifyProductBySku(sku) {
   try {
     console.log(`🔍 Searching Shopify for product with SKU: ${sku}`);
     const result = await shopifyREST('GET', `/products.json?status=any`);
-    
+
     const products = result.products || [];
     for (const product of products) {
       for (const variant of product.variants || []) {
@@ -200,7 +200,7 @@ async function findShopifyProductBySku(sku) {
         }
       }
     }
-    
+
     console.log(`⚠️ No existing product found for SKU: ${sku}`);
     return null;
   } catch (err) {
@@ -216,12 +216,12 @@ async function findShopifyProductBySku(sku) {
 async function getRelatedAssets(productId, contentHubBaseUrl, token) {
   try {
     console.log(`📸 Fetching related assets for product ${productId}`);
-    
+
     // Use Content Hub Query API to find all assets linked to this product
     // Query: Definition.Name=='M.Asset' AND Parent('PCMProductToAsset').id==productId
     const query = `Definition.Name=='M.Asset' AND Parent('PCMProductToAsset').id==${productId}`;
     console.log(`   📋 Query: ${query}`);
-    
+
     const response = await axios.get(
       `${contentHubBaseUrl}/api/entities/query`,
       {
@@ -230,22 +230,22 @@ async function getRelatedAssets(productId, contentHubBaseUrl, token) {
         timeout: 10000
       }
     );
-    
+
     const assetEntities = response.data?.items || [];
     console.log(`   ✅ Query returned ${assetEntities.length} assets`);
-    
+
     if (assetEntities.length === 0) {
       console.log(`   ⚠️  No assets found for product ${productId}`);
       return [];
     }
-    
+
     // Extract image URLs directly from the asset entities (no extra fetches needed)
     const imageAssets = [];
     for (let i = 0; i < assetEntities.length; i++) {
       try {
         const asset = assetEntities[i];
         const { title, imageUrl } = extractAssetImage(asset);
-        
+
         if (imageUrl) {
           console.log(`   Asset #${i}: ${asset.identifier} ✅`);
           imageAssets.push({ id: asset.id, title, imageUrl });
@@ -256,13 +256,13 @@ async function getRelatedAssets(productId, contentHubBaseUrl, token) {
         console.warn(`   Asset #${i}: Error processing -`, err.message.slice(0, 80));
       }
     }
-    
+
     if (imageAssets.length === 0) {
       console.log(`   ⚠️  No usable image URLs found in ${assetEntities.length} asset(s)`);
     } else {
       console.log(`   ✅ Successfully retrieved ${imageAssets.length} asset image(s)`);
     }
-    
+
     return imageAssets;
   } catch (err) {
     console.error('❌ Asset query error:', err.message);
@@ -282,8 +282,17 @@ function buildMediaInput(assets) {
 }
 
 // ─────────────────────────────────────────────
-// Helper: Set product metafields using REST API
+// Helper: Set product metafields using GraphQL metafieldsSet
 // Updates Content Hub ID metafields for tracking
+//
+// FIX #7: Switched from legacy REST /metafields.json to
+// GraphQL metafieldsSet. REST silently 422'd with no usable
+// error body; metafieldsSet returns real userErrors, and
+// exposed the true root cause: the metafield *definitions*
+// in Shopify admin were created as type 'number_integer',
+// but the code was sending 'single_line_text_field'.
+// metafieldType is now a parameter so each call site can
+// match its definition's actual type.
 // ─────────────────────────────────────────────
 const METAFIELDS_SET_MUTATION = `
   mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
@@ -294,18 +303,18 @@ const METAFIELDS_SET_MUTATION = `
   }
 `;
 
-async function setProductMetafields(productGid, metafieldNamespace, metafieldKey, metafieldValue) {
+async function setProductMetafields(productGid, metafieldNamespace, metafieldKey, metafieldValue, metafieldType = 'single_line_text_field') {
   try {
-    console.log(`📝 Setting metafield: ${metafieldKey} = ${metafieldValue}`);
+    console.log(`📝 Setting metafield: ${metafieldKey} = ${metafieldValue} (type: ${metafieldType})`);
 
     const data = await shopifyGraphQL(METAFIELDS_SET_MUTATION, {
       metafields: [
         {
-          ownerId: productGid, // full gid://shopify/Product/xxxx — no need to split it
+          ownerId: productGid, // full gid://shopify/Product/xxxx
           namespace: metafieldNamespace,
           key: metafieldKey,
           value: String(metafieldValue),
-          type: 'single_line_text_field'
+          type: metafieldType
         }
       ]
     });
@@ -387,7 +396,7 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   const props = productEntity?.properties || {};
 
   const title = props.ProductName || props.Title || productEntity?.identifier || 'Untitled Product';
-  
+
   // Extract description - handle both string and object types
   let description = '';
   const descriptionProp = props.Description || props.ProductShortDescription;
@@ -403,16 +412,16 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       }
     }
   }
-  
+
   const vendor = props.Brand || 'Himalaya Wellness';
   const productType = props.Category || '';
-  
+
   // FIX #4: Use product number as primary SKU, fallback to identifier
   // This ensures the Content Hub product number (e.g., 000800134652) is used as the Shopify SKU
   const productNumber = props.Number || props.ProductNumber || null;
   const identifier = productEntity?.identifier || String(productId);
   const sku = productNumber || identifier;
-  
+
   const price = props.Price || '0.00';
 
   console.log(`🎯 Processing product: ${title}`);
@@ -422,7 +431,7 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
 
   // FIX #1: Check if product already exists to prevent duplicates
   const existingProduct = await findShopifyProductBySku(sku);
-  
+
   // Fetch related assets BEFORE creating product
   const relatedAssets = await getRelatedAssets(productId, contentHubBaseUrl, chToken);
 
@@ -441,7 +450,7 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       const data = await shopifyGraphQL(PRODUCT_UPDATE_MUTATION, {
         input: { id: `gid://shopify/Product/${existingProduct.id}`, ...input }
       });
-      
+
       if (data.productUpdate?.userErrors?.length) {
         throw new Error(JSON.stringify(data.productUpdate.userErrors));
       }
@@ -449,7 +458,7 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
     } else {
       console.log(`✨ Creating new product: ${title}`);
       const data = await shopifyGraphQL(PRODUCT_CREATE_MUTATION, { input });
-      
+
       if (data.productCreate?.userErrors?.length) {
         throw new Error(JSON.stringify(data.productCreate.userErrors));
       }
@@ -461,20 +470,20 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       try {
         const productGid = shopifyProduct.id;
         const productRestId = productGid.split('/').pop();
-        
+
         console.log(`📦 Updating variant for product ${productRestId}`);
         const variantResult = await shopifyREST('GET', `/products/${productRestId}/variants.json`);
-        
+
         if (variantResult.variants && variantResult.variants.length > 0) {
           const defaultVariant = variantResult.variants[0];
-          
+
           await shopifyREST('PUT', `/variants/${defaultVariant.id}.json`, {
             variant: {
               sku,
               price: String(price)
             }
           });
-          
+
           console.log(`✅ Variant updated: SKU=${sku}, Price=${price}`);
         }
       } catch (variantErr) {
@@ -491,7 +500,7 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
           productId: shopifyProduct.id,
           media: mediaInput
         });
-        
+
         if (mediaData.productCreateMedia?.mediaUserErrors?.length) {
           console.warn('⚠️ Media upload warnings:', mediaData.productCreateMedia.mediaUserErrors);
         } else {
@@ -502,13 +511,15 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       }
     }
 
-    // FIX #6: Set Content Hub Product ID metafield
+    // FIX #6 / FIX #7: Set Content Hub Product ID metafield
+    // Definition in Shopify admin is type 'number_integer' — must match exactly.
     try {
       await setProductMetafields(
         shopifyProduct.id,
         'custom',
         'content_hub_product_id',
-        String(productId)
+        String(productId),
+        'number_integer'
       );
     } catch (metafieldErr) {
       console.warn('⚠️ Could not set Content Hub Product ID metafield:', metafieldErr.message);
@@ -525,10 +536,10 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
             ShopifyLastSyncedOn: new Date().toISOString()
           }
         },
-        { 
-          headers: { 
-            'X-Auth-Token': chToken, 
-            'Content-Type': 'application/json' 
+        {
+          headers: {
+            'X-Auth-Token': chToken,
+            'Content-Type': 'application/json'
           },
           timeout: 5000
         }
@@ -609,7 +620,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
       const data = await shopifyGraphQL(PRODUCT_UPDATE_MUTATION, {
         input: { id: `gid://shopify/Product/${existingProduct.id}`, ...input }
       });
-      
+
       if (data.productUpdate?.userErrors?.length) {
         throw new Error(JSON.stringify(data.productUpdate.userErrors));
       }
@@ -617,7 +628,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
     } else {
       console.log(`✨ Creating new product from asset: ${title}`);
       const data = await shopifyGraphQL(PRODUCT_CREATE_MUTATION, { input });
-      
+
       if (data.productCreate?.userErrors?.length) {
         throw new Error(JSON.stringify(data.productCreate.userErrors));
       }
@@ -629,17 +640,17 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
       try {
         const productGid = shopifyProduct.id;
         const productRestId = productGid.split('/').pop();
-        
+
         console.log(`📦 Updating variant for asset product ${productRestId}`);
         const variantResult = await shopifyREST('GET', `/products/${productRestId}/variants.json`);
-        
+
         if (variantResult.variants && variantResult.variants.length > 0) {
           const defaultVariant = variantResult.variants[0];
-          
+
           await shopifyREST('PUT', `/variants/${defaultVariant.id}.json`, {
             variant: { sku }
           });
-          
+
           console.log(`✅ Variant updated: SKU=${sku}`);
         }
       } catch (variantErr) {
@@ -654,7 +665,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
         productId: shopifyProduct.id,
         media: buildMediaInput([{ title, imageUrl }])
       });
-      
+
       if (mediaData.productCreateMedia?.mediaUserErrors?.length) {
         console.warn('⚠️ Media upload warnings:', mediaData.productCreateMedia.mediaUserErrors);
       } else {
@@ -664,13 +675,15 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
       console.warn('⚠️ Media attachment failed:', mediaErr.message);
     }
 
-    // FIX #6: Set Content Hub Asset ID metafield
+    // FIX #6 / FIX #7: Set Content Hub Asset ID metafield
+    // Definition in Shopify admin is type 'number_integer' — must match exactly.
     try {
       await setProductMetafields(
         shopifyProduct.id,
         'custom',
         'sitecore_content_hub_asset_id',
-        String(assetId)
+        String(assetId),
+        'number_integer'
       );
     } catch (metafieldErr) {
       console.warn('⚠️ Could not set Content Hub Asset ID metafield:', metafieldErr.message);
