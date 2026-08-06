@@ -420,7 +420,7 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   // This ensures the Content Hub product number (e.g., 000800134652) is used as the Shopify SKU
   const productNumber = props.Number || props.ProductNumber || null;
   const identifier = productEntity?.identifier || String(productId);
-  const sku = productNumber || identifier;
+  const sku = productNumber || "Hima-" + assetId; // Fallback SKU if no product number
 
   const price = props.Price || '0.00';
 
@@ -588,26 +588,31 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
   const existingProduct = await findShopifyProductBySku(sku);
 
   // Extract description - handle both string and object types
-  let description = 'Asset-based product';
-  const descriptionProp = assetEntity?.properties?.Description;
-  if (descriptionProp) {
-    if (typeof descriptionProp === 'string') {
-      description = descriptionProp;
-    } else if (typeof descriptionProp === 'object') {
-      // If it's an object (like { 'en-US': 'text' }), try to extract string value
-      if (descriptionProp['en-US']) {
-        description = descriptionProp['en-US'];
-      } else if (typeof descriptionProp === 'object') {
-        description = JSON.stringify(descriptionProp).slice(0, 500);
+let description = '';
+const descriptionProp = assetEntity?.properties?.Description;
+
+if (descriptionProp) {
+  if (typeof descriptionProp === 'string') {
+    // Simple string value
+    description = descriptionProp.trim();
+  } else if (typeof descriptionProp === 'object' && Object.keys(descriptionProp).length > 0) {
+    // Object with content (like { 'en-US': 'text' })
+    if (descriptionProp['en-US']) {
+      description = descriptionProp['en-US'];
+    } else {
+      // Try to get first available language
+      const firstValue = Object.values(descriptionProp)[0];
+      if (firstValue && typeof firstValue === 'string') {
+        description = firstValue;
       }
     }
   }
-
+}
   // Create product input
   const input = {
     title: title || 'Untitled Asset Product',
     descriptionHtml: description,
-    vendor: 'Content Hub Asset',
+    vendor: props.Brand || 'Himalaya Wellness',
     productType: 'Asset',
     status: 'DRAFT'
   };
