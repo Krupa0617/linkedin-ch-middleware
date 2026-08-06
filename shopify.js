@@ -28,21 +28,6 @@ const SHOPIFY_VERSION = SHOPIFY_API_VERSION || '2026-07';
 
 // ─────────────────────────────────────────────
 // FIX: Persistent Content Hub entity → Shopify product mapping
-//
-// Root cause of the duplicate-on-retrigger bug: dedup was relying
-// on Shopify's GraphQL search index (`productVariants(query:
-// "sku:...")`). That index is EVENTUALLY CONSISTENT — a just-created
-// product can take several seconds to a couple of minutes before it's
-// searchable. Re-triggering the same entity quickly hits the gap and
-// the search comes back empty, so a duplicate product gets created.
-//
-// Fix: keep our own local map of contentHubEntityId -> Shopify
-// product GID, persisted to disk. On each webhook, check this map
-// first and fetch the product DIRECTLY BY ID (a real-time read, not
-// a search index — no consistency delay) to decide create vs. update.
-// Falls back to the SKU search only when there's no local mapping yet
-// (e.g. first run, or the data file was lost) — matching the previous
-// behavior for pre-existing products.
 // ─────────────────────────────────────────────
 const DATA_DIRECTORY = DATA_DIR || path.join(process.cwd(), 'data');
 const MAP_FILE = path.join(DATA_DIRECTORY, 'entity-product-map.json');
@@ -87,11 +72,10 @@ function clearMappedProductGid(mapKey) {
 }
 
 // ─────────────────────────────────────────────
-// Webhook Deduplication - Prevent duplicate webhook processing
-// (Catches near-simultaneous/rapid duplicate calls for the SAME entityId)
+// Webhook Deduplication
 // ─────────────────────────────────────────────
 const webhookCache = new Map();
-const WEBHOOK_DEDUP_TTL = 5000; // 5 seconds
+const WEBHOOK_DEDUP_TTL = 5000;
 
 function isWebhookProcessing(entityId) {
   const key = `webhook-${entityId}`;
@@ -106,7 +90,6 @@ function isWebhookProcessing(entityId) {
     }
   }
 
-  // Mark as processing
   webhookCache.set(key, { timestamp: Date.now(), processed: false });
   return false;
 }
@@ -118,7 +101,6 @@ function markWebhookProcessed(entityId) {
   }
 }
 
-// Clean up old cache entries every minute
 setInterval(() => {
   const now = Date.now();
   for (const [key, value] of webhookCache.entries()) {
@@ -289,7 +271,7 @@ function extractAssetImage(entity) {
 }
 
 // ─────────────────────────────────────────────
-// Direct, real-time product lookup by GID (no search-index lag)
+// Direct product lookup by GID (no search-index lag)
 // ─────────────────────────────────────────────
 const PRODUCT_BY_ID_QUERY = `
   query getProductById($id: ID!) {
@@ -303,7 +285,7 @@ const PRODUCT_BY_ID_QUERY = `
 async function getShopifyProductById(productGid) {
   try {
     const data = await shopifyGraphQL(PRODUCT_BY_ID_QUERY, { id: productGid });
-    return data?.product || null; // null if deleted / doesn't exist
+    return data?.product || null;
   } catch (err) {
     console.warn('⚠️  Direct product lookup failed:', err.response?.data ? JSON.stringify(err.response.data) : err.message);
     return null;
@@ -311,9 +293,7 @@ async function getShopifyProductById(productGid) {
 }
 
 // ─────────────────────────────────────────────
-// SKU search — fallback only (subject to Shopify's search-index lag).
-// Used when there's no local mapping yet, e.g. the very first sync,
-// or products that existed before this mapping was introduced.
+// SKU search — fallback only
 // ─────────────────────────────────────────────
 const PRODUCT_BY_SKU_QUERY = `
   query findProductBySku($query: String!) {
@@ -359,10 +339,7 @@ async function findShopifyProductBySku(sku) {
 }
 
 // ─────────────────────────────────────────────
-// Combined lookup: local map (authoritative, instant) → SKU search (fallback)
-//
-// mapKey should be a stable, unique key for the Content Hub entity,
-// e.g. `product-${productId}` or `asset-${assetId}`.
+// Combined lookup: local map → SKU search
 // ─────────────────────────────────────────────
 async function findExistingShopifyProduct(mapKey, sku) {
   const mappedGid = getMappedProductGid(mapKey);
@@ -379,14 +356,13 @@ async function findExistingShopifyProduct(mapKey, sku) {
 
     console.warn(`⚠️  Mapped product ${mappedGid} no longer exists in Shopify (deleted?) — clearing stale mapping`);
     clearMappedProductGid(mapKey);
-    // fall through to SKU search below
   }
 
   return findShopifyProductBySku(sku);
 }
 
 // ─────────────────────────────────────────────
-// Fetch related assets using Content Hub Query API
+// Fetch related assets
 // ─────────────────────────────────────────────
 async function getRelatedAssets(productId, contentHubBaseUrl, token) {
   try {
@@ -490,6 +466,7 @@ const PRODUCT_CREATE_MEDIA_MUTATION = `
 
 // ─────────────────────────────────────────────
 // Handle product creation/update
+// FIX #10: Improved description handling and no duplicate images on update
 // ─────────────────────────────────────────────
 async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   const productEntity = await getEntity(productId, contentHubBaseUrl, chToken);
@@ -509,15 +486,38 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   const existingProduct = await findExistingShopifyProduct(mapKey, sku);
   const relatedAssets = await getRelatedAssets(productId, contentHubBaseUrl, chToken);
 
+  // FIX #10: Improved description extraction - check multiple fields
+  let description = '';
+  
+  // Priority 1: ProductShortDescription (if localized)
+  if (props.ProductShortDescription) {
+    if (typeof props.ProductShortDescription === 'string') {
+      description = props.ProductShortDescription;
+    } else if (typeof props.ProductShortDescription === 'object' && props.ProductShortDescription['en-US']) {
+      description = props.ProductShortDescription['en-US'];
+    }
+  }
+  // Priority 2: Description field
+  else if (props.Description) {
+    if (typeof props.Description === 'string') {
+      description = props.Description;
+    } else if (typeof props.Description === 'object' && props.Description['en-US']) {
+      description = props.Description['en-US'];
+    }
+  }
+  
+  console.log(`   📝 Description: ${description.slice(0, 60)}${description.length > 60 ? '...' : ''}`);
+
   const input = {
     title,
-    descriptionHtml: props.Description || '',
+    descriptionHtml: description,
     vendor: props.Brand || 'Himalaya Wellness',
     productType: props.Category || '',
     status: 'DRAFT'
   };
 
   let shopifyProduct;
+  let isNewProduct = false;
   try {
     if (existingProduct) {
       console.log(`♻️  UPDATE mode - Product ${existingProduct.id} already exists`);
@@ -529,7 +529,7 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
         throw new Error(JSON.stringify(data.productUpdate.userErrors));
       }
       shopifyProduct = data.productUpdate.product;
-      console.log(`✅ Product updated`);
+      console.log(`✅ Product updated (description and details synced)`);
     } else {
       console.log(`✨ CREATE mode - No existing product found`);
       const data = await shopifyGraphQL(PRODUCT_CREATE_MUTATION, { input });
@@ -538,16 +538,16 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
         throw new Error(JSON.stringify(data.productCreate.userErrors));
       }
       shopifyProduct = data.productCreate.product;
+      isNewProduct = true;
       console.log(`✅ Product created`);
     }
 
-    // Persist the mapping immediately — this is what makes the very
-    // next retrigger safe even if Shopify's search index hasn't caught up.
+    // Persist the mapping immediately
     if (shopifyProduct?.id) {
       setMappedProductGid(mapKey, shopifyProduct.id);
     }
 
-    // Set SKU on variant
+    // Set SKU and price on variant
     if (shopifyProduct?.id) {
       try {
         const productRestId = shopifyProduct.id.split('/').pop();
@@ -556,17 +556,17 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
         if (variantResult.variants && variantResult.variants.length > 0) {
           const defaultVariant = variantResult.variants[0];
           await shopifyREST('PUT', `/variants/${defaultVariant.id}.json`, {
-            variant: { sku }
+            variant: { sku, price: String(price) }
           });
-          console.log(`✅ SKU set: "${sku}"`);
+          console.log(`✅ SKU: "${sku}", Price: ${price}`);
         }
       } catch (variantErr) {
         console.warn('⚠️  Variant update warning:', variantErr.message);
       }
     }
 
-    // Attach images
-    if (relatedAssets.length > 0) {
+    // FIX #10: Only attach images on NEW products to prevent duplicates
+    if (isNewProduct && relatedAssets.length > 0) {
       try {
         const mediaInput = buildMediaInput(relatedAssets);
         const mediaData = await shopifyGraphQL(PRODUCT_CREATE_MEDIA_MUTATION, {
@@ -577,6 +577,8 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       } catch (mediaErr) {
         console.warn('⚠️  Image attachment failed:', mediaErr.message);
       }
+    } else if (!isNewProduct && relatedAssets.length > 0) {
+      console.log(`ℹ️  Skipping image attachment on update (prevents duplicate images)`);
     }
 
     // Write sync status back to Content Hub
@@ -602,8 +604,9 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       shopifyProductId: shopifyProduct.id,
       title: shopifyProduct.title,
       sku,
-      imagesAttached: relatedAssets.length,
-      isUpdate: !!existingProduct
+      imagesAttached: isNewProduct ? relatedAssets.length : 0,
+      isUpdate: !!existingProduct,
+      descriptionUpdated: true
     };
   } catch (err) {
     console.error('❌ Product sync failed:', err.message);
@@ -658,6 +661,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
   };
 
   let shopifyProduct;
+  let isNewProduct = false;
   try {
     if (existingProduct) {
       console.log(`♻️  UPDATE mode - Product ${existingProduct.id} already exists`);
@@ -669,7 +673,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
         throw new Error(JSON.stringify(data.productUpdate.userErrors));
       }
       shopifyProduct = data.productUpdate.product;
-      console.log(`✅ Product updated`);
+      console.log(`✅ Product updated (description synced)`);
     } else {
       console.log(`✨ CREATE mode - No existing product found`);
       const data = await shopifyGraphQL(PRODUCT_CREATE_MUTATION, { input });
@@ -678,10 +682,11 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
         throw new Error(JSON.stringify(data.productCreate.userErrors));
       }
       shopifyProduct = data.productCreate.product;
+      isNewProduct = true;
       console.log(`✅ Product created`);
     }
 
-    // Persist the mapping immediately.
+    // Persist the mapping immediately
     if (shopifyProduct?.id) {
       setMappedProductGid(mapKey, shopifyProduct.id);
     }
@@ -697,15 +702,15 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
           await shopifyREST('PUT', `/variants/${defaultVariant.id}.json`, {
             variant: { sku }
           });
-          console.log(`✅ SKU set: "${sku}"`);
+          console.log(`✅ SKU: "${sku}"`);
         }
       } catch (variantErr) {
         console.warn('⚠️  Variant update warning:', variantErr.message);
       }
     }
 
-    // Attach image
-    if (imageUrl) {
+    // FIX #10: Only attach image on NEW products to prevent duplicates
+    if (isNewProduct && imageUrl) {
       try {
         const mediaData = await shopifyGraphQL(PRODUCT_CREATE_MEDIA_MUTATION, {
           productId: shopifyProduct.id,
@@ -719,6 +724,8 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
       } catch (mediaErr) {
         console.warn('⚠️  Image attachment failed:', mediaErr.message);
       }
+    } else if (!isNewProduct && imageUrl) {
+      console.log(`ℹ️  Skipping image attachment on update (prevents duplicate images)`);
     }
 
     // Write sync status back to Content Hub
@@ -744,8 +751,9 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
       shopifyProductId: shopifyProduct.id,
       title: shopifyProduct.title,
       sku,
-      imagesAttached: imageUrl ? 1 : 0,
-      isUpdate: !!existingProduct
+      imagesAttached: isNewProduct ? 1 : 0,
+      isUpdate: !!existingProduct,
+      descriptionUpdated: true
     };
   } catch (err) {
     console.error('❌ Asset sync failed:', err.message);
@@ -776,9 +784,6 @@ app.post('/shopify/publish', async (req, res) => {
     return res.status(400).json({ error: 'No entity ID provided' });
   }
 
-  // ─────────────────────────────────────────────
-  // Check if webhook already processing (near-simultaneous duplicates)
-  // ─────────────────────────────────────────────
   if (isWebhookProcessing(entityId)) {
     console.warn(`⚠️  Duplicate webhook ignored - already processing`);
     return res.status(202).json({
