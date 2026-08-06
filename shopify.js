@@ -435,19 +435,20 @@ async function setProductMetafields(productGid, namespace, key, value) {
     console.log(`   → Product ID: ${productId}, Namespace: ${namespace}, Key: ${key}`);
     
     // Use REST API to set metafield
+    // FIX: Use number_integer type since the metafields in Shopify are defined as numbers
     const metafieldData = {
       metafield: {
         namespace: namespace,
         key: key,
-        value: String(value),  // Ensure value is string
-        type: 'single_line_text_field'
+        value: String(value),  // Convert to string for API, but type tells Shopify to store as integer
+        type: 'number_integer'  // ✅ FIXED: Changed from 'single_line_text_field' to 'number_integer'
       }
     };
     
     const response = await shopifyREST('POST', `/products/${productId}/metafields.json`, metafieldData);
     
     if (response?.metafield?.id) {
-      console.log(`✅ Metafield set successfully: ${key} (ID: ${response.metafield.id})`);
+      console.log(`✅ Metafield set successfully: ${key} (ID: ${response.metafield.id}, Value: ${response.metafield.value})`);
       return true;
     } else {
       console.warn(`⚠️  Metafield response unexpected:`, JSON.stringify(response));
