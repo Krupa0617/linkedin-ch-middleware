@@ -311,10 +311,21 @@ async function getRelatedAssets(productId, contentHubBaseUrl, token) {
     for (let i = 0; i < assetSummaries.length; i++) {
       try {
         const summary = assetSummaries[i];
-        const assetId = summary.id || summary.entityId || summary.entity_id;
+        
+        // FIX: Extract ID from multiple possible locations
+        let assetId = summary.id || summary.entityId || summary.entity_id;
+        
+        // If no direct ID, try to extract from href URL
+        if (!assetId && summary.href) {
+          const hrefMatch = summary.href.match(/\/entities\/(\d+)$/);
+          if (hrefMatch) {
+            assetId = hrefMatch[1];
+            console.log(`      ℹ️  Asset #${i}: Extracted ID ${assetId} from href`);
+          }
+        }
         
         if (!assetId) {
-          console.warn(`      ⚠️  Asset #${i} missing id field. Keys: ${Object.keys(summary).join(', ')}`);
+          console.warn(`      ⚠️  Asset #${i} - could not extract id. Keys: ${Object.keys(summary).join(', ')}`);
           console.warn(`         Data: ${JSON.stringify(summary).slice(0, 150)}`);
           continue;
         }
