@@ -582,7 +582,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
 
   // Use asset identifier or ID as SKU
   const assetIdentifier = assetEntity?.identifier || `asset-${assetId}`;
-  const sku = assetIdentifier;
+  const sku = `hima${assetId}`;
 
   // Check if product already exists with this SKU
   const existingProduct = await findShopifyProductBySku(sku);
@@ -612,7 +612,7 @@ if (descriptionProp) {
   const input = {
     title: title || 'Untitled Asset Product',
     descriptionHtml: description,
-    vendor: props.Brand || 'Himalaya Wellness',
+    vendor: 'Himalaya Wellness',
     productType: 'Asset',
     status: 'DRAFT'
   };
