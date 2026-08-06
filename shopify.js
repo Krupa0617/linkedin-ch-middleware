@@ -47,9 +47,16 @@ function loadEntityProductMap() {
 function saveEntityProductMap(map) {
   try {
     if (!fs.existsSync(DATA_DIRECTORY)) {
-      fs.mkdirSync(DATA_DIRECTORY, { recursive: true });
+      try {
+        fs.mkdirSync(DATA_DIRECTORY, { recursive: true });
+      } catch (mkdirErr) {
+        console.warn('⚠️  Could not create data directory, mapping will not persist:', mkdirErr.message);
+        // Don't fail, just continue without persistence
+        return;
+      }
     }
     fs.writeFileSync(MAP_FILE, JSON.stringify(map, null, 2));
+    console.log(`✅ Entity-product map persisted to ${MAP_FILE}`);
   } catch (err) {
     console.warn('⚠️  Could not persist entity-product map:', err.message);
   }
@@ -412,25 +419,45 @@ async function setProductMetafields(productGid, namespace, key, value) {
   try {
     console.log(`📝 Setting metafield: ${key} = ${value}`);
     
+    if (!productGid) {
+      console.warn(`⚠️  Cannot set metafield: productGid is missing`);
+      return false;
+    }
+    
     // Extract product ID from GID (gid://shopify/Product/123456 -> 123456)
     const productId = productGid.split('/').pop();
+    
+    if (!productId) {
+      console.warn(`⚠️  Cannot set metafield: could not extract product ID from GID: ${productGid}`);
+      return false;
+    }
+    
+    console.log(`   → Product ID: ${productId}, Namespace: ${namespace}, Key: ${key}`);
     
     // Use REST API to set metafield
     const metafieldData = {
       metafield: {
         namespace: namespace,
         key: key,
-        value: value,
+        value: String(value),  // Ensure value is string
         type: 'single_line_text_field'
       }
     };
     
-    await shopifyREST('POST', `/products/${productId}/metafields.json`, metafieldData);
+    const response = await shopifyREST('POST', `/products/${productId}/metafields.json`, metafieldData);
     
-    console.log(`✅ Metafield set successfully: ${key}`);
-    return true;
+    if (response?.metafield?.id) {
+      console.log(`✅ Metafield set successfully: ${key} (ID: ${response.metafield.id})`);
+      return true;
+    } else {
+      console.warn(`⚠️  Metafield response unexpected:`, JSON.stringify(response));
+      return false;
+    }
   } catch (err) {
-    console.warn(`⚠️  Metafield update failed for ${key}:`, err.message);
+    console.error(`❌ Metafield update failed for ${key}:`, err.message);
+    if (err.response?.data) {
+      console.error(`   Error details:`, JSON.stringify(err.response.data));
+    }
     return false;
   }
 }
