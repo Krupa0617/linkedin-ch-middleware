@@ -405,6 +405,37 @@ async function getRelatedAssets(productId, contentHubBaseUrl, token) {
 }
 
 // ─────────────────────────────────────────────
+// Helper: Set product metafields using REST API
+// Updates Content Hub ID metafields for tracking
+// ─────────────────────────────────────────────
+async function setProductMetafields(productGid, namespace, key, value) {
+  try {
+    console.log(`📝 Setting metafield: ${key} = ${value}`);
+    
+    // Extract product ID from GID (gid://shopify/Product/123456 -> 123456)
+    const productId = productGid.split('/').pop();
+    
+    // Use REST API to set metafield
+    const metafieldData = {
+      metafield: {
+        namespace: namespace,
+        key: key,
+        value: value,
+        type: 'single_line_text_field'
+      }
+    };
+    
+    await shopifyREST('POST', `/products/${productId}/metafields.json`, metafieldData);
+    
+    console.log(`✅ Metafield set successfully: ${key}`);
+    return true;
+  } catch (err) {
+    console.warn(`⚠️  Metafield update failed for ${key}:`, err.message);
+    return false;
+  }
+}
+
+// ─────────────────────────────────────────────
 // Helper: Build Shopify media input
 // ─────────────────────────────────────────────
 function buildMediaInput(assets) {
@@ -581,6 +612,18 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       console.log(`ℹ️  Skipping image attachment on update (prevents duplicate images)`);
     }
 
+    // Set Content Hub Product ID metafield
+    try {
+      await setProductMetafields(
+        shopifyProduct.id,
+        'custom',
+        'content_hub_product_id',
+        String(productId)
+      );
+    } catch (metafieldErr) {
+      console.warn('⚠️  Could not set Content Hub Product ID metafield:', metafieldErr.message);
+    }
+
     // Write sync status back to Content Hub
     try {
       await axios.put(
@@ -726,6 +769,18 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
       }
     } else if (!isNewProduct && imageUrl) {
       console.log(`ℹ️  Skipping image attachment on update (prevents duplicate images)`);
+    }
+
+    // Set Content Hub Asset ID metafield
+    try {
+      await setProductMetafields(
+        shopifyProduct.id,
+        'custom',
+        'sitecore_content_hub_asset_id',
+        String(assetId)
+      );
+    } catch (metafieldErr) {
+      console.warn('⚠️  Could not set Content Hub Asset ID metafield:', metafieldErr.message);
     }
 
     // Write sync status back to Content Hub
