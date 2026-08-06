@@ -282,6 +282,29 @@ function buildMediaInput(assets) {
 }
 
 // ─────────────────────────────────────────────
+// Helper: Set product metafields
+// Updates Content Hub ID metafields for tracking
+// ─────────────────────────────────────────────
+async function setProductMetafields(productId, metafieldInput) {
+  try {
+    console.log(`📝 Setting metafields for product ${productId}`);
+    
+    const data = await shopifyGraphQL(METAFIELDS_SET_MUTATION, { input: metafieldInput });
+    
+    if (data.metafieldsSet?.userErrors?.length) {
+      console.warn('⚠️ Metafield warnings:', data.metafieldsSet.userErrors);
+    } else {
+      console.log(`✅ Metafields updated successfully`);
+    }
+    
+    return data.metafieldsSet?.metafields || [];
+  } catch (err) {
+    console.warn('⚠️ Metafield update failed:', err.message);
+    return [];
+  }
+}
+
+// ─────────────────────────────────────────────
 // Shopify Mutations & Queries
 // ─────────────────────────────────────────────
 const PRODUCT_CREATE_MUTATION = `
@@ -330,6 +353,23 @@ const PRODUCT_CREATE_MEDIA_MUTATION = `
   }
 `;
 
+const METAFIELDS_SET_MUTATION = `
+  mutation metafieldsSet($input: [MetafieldsSetInput!]!) {
+    metafieldsSet(input: $input) {
+      metafields { 
+        id 
+        namespace 
+        key 
+        value 
+      }
+      userErrors { 
+        field 
+        message 
+      }
+    }
+  }
+`;
+
 // ─────────────────────────────────────────────
 // FIX #3: Handle product creation/update
 // Creates or updates a single product with all
@@ -343,7 +383,23 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   const props = productEntity?.properties || {};
 
   const title = props.ProductName || props.Title || productEntity?.identifier || 'Untitled Product';
-  const description = props.Description || props.ProductShortDescription?.['en-US'] || '';
+  
+  // Extract description - handle both string and object types
+  let description = '';
+  const descriptionProp = props.Description || props.ProductShortDescription;
+  if (descriptionProp) {
+    if (typeof descriptionProp === 'string') {
+      description = descriptionProp;
+    } else if (typeof descriptionProp === 'object') {
+      // If it's an object (like { 'en-US': 'text' }), try to extract string value
+      if (descriptionProp['en-US']) {
+        description = descriptionProp['en-US'];
+      } else {
+        description = '';
+      }
+    }
+  }
+  
   const vendor = props.Brand || 'Himalaya Wellness';
   const productType = props.Category || '';
   
@@ -442,6 +498,21 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       }
     }
 
+    // FIX #6: Set Content Hub Product ID metafield
+    try {
+      await setProductMetafields(shopifyProduct.id, [
+        {
+          ownerId: shopifyProduct.id,
+          namespace: 'custom',
+          key: 'sitecore_content_hub_product_id',
+          type: 'single_line_text_field',
+          value: String(productId)
+        }
+      ]);
+    } catch (metafieldErr) {
+      console.warn('⚠️ Could not set Content Hub Product ID metafield:', metafieldErr.message);
+    }
+
     // Write sync status back to Content Hub
     try {
       await axios.put(
@@ -472,7 +543,9 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       title: shopifyProduct.title,
       imagesAttached: relatedAssets.length,
       isUpdate: !!existingProduct,
-      sku
+      sku,
+      contentHubProductId: productId,
+      metafieldSet: true
     };
   } catch (err) {
     console.error('❌ Product sync failed:', err.message);
@@ -502,10 +575,26 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
   // Check if product already exists with this SKU
   const existingProduct = await findShopifyProductBySku(sku);
 
+  // Extract description - handle both string and object types
+  let description = 'Asset-based product';
+  const descriptionProp = assetEntity?.properties?.Description;
+  if (descriptionProp) {
+    if (typeof descriptionProp === 'string') {
+      description = descriptionProp;
+    } else if (typeof descriptionProp === 'object') {
+      // If it's an object (like { 'en-US': 'text' }), try to extract string value
+      if (descriptionProp['en-US']) {
+        description = descriptionProp['en-US'];
+      } else if (typeof descriptionProp === 'object') {
+        description = JSON.stringify(descriptionProp).slice(0, 500);
+      }
+    }
+  }
+
   // Create product input
   const input = {
     title: title || 'Untitled Asset Product',
-    descriptionHtml: assetEntity?.properties?.Description || 'Asset-based product',
+    descriptionHtml: description,
     vendor: 'Content Hub Asset',
     productType: 'Asset',
     status: 'DRAFT'
@@ -574,6 +663,21 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
       console.warn('⚠️ Media attachment failed:', mediaErr.message);
     }
 
+    // FIX #6: Set Content Hub Asset ID metafield
+    try {
+      await setProductMetafields(shopifyProduct.id, [
+        {
+          ownerId: shopifyProduct.id,
+          namespace: 'custom',
+          key: 'sitecore_content_hub_asset_id',
+          type: 'single_line_text_field',
+          value: String(assetId)
+        }
+      ]);
+    } catch (metafieldErr) {
+      console.warn('⚠️ Could not set Content Hub Asset ID metafield:', metafieldErr.message);
+    }
+
     return {
       entityType: 'Asset',
       shopifyProductId: shopifyProduct.id,
@@ -581,7 +685,9 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
       assetTitle: title,
       imageUrl,
       isUpdate: !!existingProduct,
-      sku
+      sku,
+      contentHubAssetId: assetId,
+      metafieldSet: true
     };
   } catch (err) {
     console.error('❌ Asset product creation failed:', err.message);
