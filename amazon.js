@@ -94,7 +94,7 @@ const MARKETPLACES = {
 
         id: AMAZON_MARKETPLACE_ID || "A21TJRUUN4KGV",
 
-        endpoint: AMAZON_ENDPOINTS.FE,
+        endpoint: AMAZON_ENDPOINTS.EU,
 
         currency: "INR",
 
@@ -119,7 +119,7 @@ const httpsAgent = new https.Agent({
 
 const AMAZON_API = IS_SANDBOX
 ?
-"https://sandbox.sellingpartnerapi-fe.amazon.com"
+"https://sandbox.sellingpartnerapi-eu.amazon.com"
 :
 MARKETPLACE.endpoint;
 
