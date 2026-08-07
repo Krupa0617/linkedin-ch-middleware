@@ -94,7 +94,7 @@ const MARKETPLACES = {
 
         id: AMAZON_MARKETPLACE_ID || "A21TJRUUN4KGV",
 
-        endpoint: AMAZON_ENDPOINTS.EU,
+        endpoint: AMAZON_ENDPOINTS.FE,
 
         currency: "INR",
 
