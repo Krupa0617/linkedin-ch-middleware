@@ -278,6 +278,62 @@ function extractAssetImage(entity) {
 }
 
 // ─────────────────────────────────────────────
+// NEW: Helper to pull a possibly-localized text property
+// off a Content Hub entity (e.g. { "en-US": "value" } or plain string)
+// ─────────────────────────────────────────────
+function extractLocalizedText(value) {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object') {
+    if (value['en-US']) return value['en-US'];
+    const first = Object.values(value)[0];
+    if (typeof first === 'string') return first;
+  }
+  return '';
+}
+
+// ─────────────────────────────────────────────
+// NEW: Country name -> ISO 3166-1 alpha-2 code
+// Shopify's "Country/Region of origin" field (on the InventoryItem)
+// requires a 2-letter code. Extend this map as new countries show up
+// in Content Hub data.
+// ─────────────────────────────────────────────
+const COUNTRY_NAME_TO_ISO = {
+  'india': 'IN',
+  'united states': 'US',
+  'united states of america': 'US',
+  'usa': 'US',
+  'united kingdom': 'GB',
+  'uk': 'GB',
+  'germany': 'DE',
+  'china': 'CN',
+  'sri lanka': 'LK',
+  'nepal': 'NP',
+  'bangladesh': 'BD',
+  'united arab emirates': 'AE',
+  'uae': 'AE',
+  'canada': 'CA',
+  'australia': 'AU'
+};
+
+function toCountryCode(rawValue) {
+  const value = extractLocalizedText(rawValue).trim();
+  if (!value) return null;
+
+  // Already a 2-letter ISO code
+  if (/^[a-zA-Z]{2}$/.test(value)) {
+    return value.toUpperCase();
+  }
+
+  const mapped = COUNTRY_NAME_TO_ISO[value.toLowerCase()];
+  if (!mapped) {
+    console.warn(`⚠️  Could not map country "${value}" to an ISO code — skipping country of origin. Add it to COUNTRY_NAME_TO_ISO.`);
+    return null;
+  }
+  return mapped;
+}
+
+// ─────────────────────────────────────────────
 // Direct product lookup by GID (no search-index lag)
 // ─────────────────────────────────────────────
 const PRODUCT_BY_ID_QUERY = `
@@ -413,40 +469,41 @@ async function getRelatedAssets(productId, contentHubBaseUrl, token) {
 
 // ─────────────────────────────────────────────
 // Helper: Set product metafields using REST API
-// Updates Content Hub ID metafields for tracking
+// Updates Content Hub tracking + custom text metafields
+// UPDATED: `type` is now a parameter (was hardcoded to number_integer)
+// so this same helper can be reused for text fields like
+// ProductType / Manufacturedby / Contact.
 // ─────────────────────────────────────────────
-async function setProductMetafields(productGid, namespace, key, value) {
+async function setProductMetafields(productGid, namespace, key, value, type = 'single_line_text_field') {
   try {
     console.log(`📝 Setting metafield: ${key} = ${value}`);
-    
+
     if (!productGid) {
       console.warn(`⚠️  Cannot set metafield: productGid is missing`);
       return false;
     }
-    
+
     // Extract product ID from GID (gid://shopify/Product/123456 -> 123456)
     const productId = productGid.split('/').pop();
-    
+
     if (!productId) {
       console.warn(`⚠️  Cannot set metafield: could not extract product ID from GID: ${productGid}`);
       return false;
     }
-    
-    console.log(`   → Product ID: ${productId}, Namespace: ${namespace}, Key: ${key}`);
-    
-    // Use REST API to set metafield
-    // FIX: Use number_integer type since the metafields in Shopify are defined as numbers
+
+    console.log(`   → Product ID: ${productId}, Namespace: ${namespace}, Key: ${key}, Type: ${type}`);
+
     const metafieldData = {
       metafield: {
         namespace: namespace,
         key: key,
-        value: String(value),  // Convert to string for API, but type tells Shopify to store as integer
-        type: 'number_integer'  // ✅ FIXED: Changed from 'single_line_text_field' to 'number_integer'
+        value: String(value),
+        type: type
       }
     };
-    
+
     const response = await shopifyREST('POST', `/products/${productId}/metafields.json`, metafieldData);
-    
+
     if (response?.metafield?.id) {
       console.log(`✅ Metafield set successfully: ${key} (ID: ${response.metafield.id}, Value: ${response.metafield.value})`);
       return true;
@@ -459,6 +516,33 @@ async function setProductMetafields(productGid, namespace, key, value) {
     if (err.response?.data) {
       console.error(`   Error details:`, JSON.stringify(err.response.data));
     }
+    return false;
+  }
+}
+
+// ─────────────────────────────────────────────
+// NEW: Set the Country/Region of origin on a variant's InventoryItem
+// This is the field shown in the Shopify admin under
+// Product > More details > Country/Region of origin.
+// ─────────────────────────────────────────────
+async function setInventoryItemCountryOfOrigin(variantId, countryCode) {
+  try {
+    const variantData = await shopifyREST('GET', `/variants/${variantId}.json`);
+    const inventoryItemId = variantData?.variant?.inventory_item_id;
+
+    if (!inventoryItemId) {
+      console.warn(`⚠️  Could not find inventory_item_id for variant ${variantId}`);
+      return false;
+    }
+
+    await shopifyREST('PUT', `/inventory_items/${inventoryItemId}.json`, {
+      inventory_item: { country_code_of_origin: countryCode }
+    });
+
+    console.log(`✅ Country/Region of origin set: ${countryCode}`);
+    return true;
+  } catch (err) {
+    console.error('❌ Failed to set country of origin:', err.response?.data ? JSON.stringify(err.response.data) : err.message);
     return false;
   }
 }
@@ -526,6 +610,7 @@ const PRODUCT_CREATE_MEDIA_MUTATION = `
 // ─────────────────────────────────────────────
 // Handle product creation/update
 // FIX #10: Improved description handling and no duplicate images on update
+// NEW: ProductType / CountryofOrigin / Manufacturedby / Contact mapping
 // ─────────────────────────────────────────────
 async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   const productEntity = await getEntity(productId, contentHubBaseUrl, chToken);
@@ -536,10 +621,20 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   const price = props.Price || '0.00';
   const mapKey = `product-${productId}`;
 
+  // NEW: pull the additional Content Hub fields
+  const productTypeField = extractLocalizedText(props.ProductType);
+  const countryOfOriginRaw = props.CountryofOrigin;
+  const manufacturedBy = extractLocalizedText(props.Manufacturedby);
+  const contact = extractLocalizedText(props.Contact);
+
   console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
   console.log(`🎯 Product: ${title}`);
   console.log(`📌 SKU: "${sku}"`);
   console.log(`📌 Entity ID: ${productId}`);
+  console.log(`📌 ProductType: "${productTypeField}"`);
+  console.log(`📌 CountryOfOrigin: "${extractLocalizedText(countryOfOriginRaw)}"`);
+  console.log(`📌 Manufacturedby: "${manufacturedBy}"`);
+  console.log(`📌 Contact: "${contact}"`);
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
 
   const existingProduct = await findExistingShopifyProduct(mapKey, sku);
@@ -547,24 +642,16 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
 
   // FIX #10: Improved description extraction - check multiple fields
   let description = '';
-  
+
   // Priority 1: ProductLongDescription (if localized)
   if (props.ProductLongDescription) {
-    if (typeof props.ProductLongDescription === 'string') {
-      description = props.ProductLongDescription;
-    } else if (typeof props.ProductLongDescription === 'object' && props.ProductLongDescription['en-US']) {
-      description = props.ProductLongDescription['en-US'];
-    }
+    description = extractLocalizedText(props.ProductLongDescription);
   }
   // Priority 2: Description field
   else if (props.Description) {
-    if (typeof props.Description === 'string') {
-      description = props.Description;
-    } else if (typeof props.Description === 'object' && props.Description['en-US']) {
-      description = props.Description['en-US'];
-    }
+    description = extractLocalizedText(props.Description);
   }
-  
+
   console.log(`   📝 Description: ${description.slice(0, 60)}${description.length > 60 ? '...' : ''}`);
 
   const input = {
@@ -606,7 +693,7 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       setMappedProductGid(mapKey, shopifyProduct.id);
     }
 
-    // Set SKU and price on variant
+    // Set SKU and price on variant, and NEW: country of origin
     if (shopifyProduct?.id) {
       try {
         const productRestId = shopifyProduct.id.split('/').pop();
@@ -618,6 +705,12 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
             variant: { sku, price: String(price) }
           });
           console.log(`✅ SKU: "${sku}", Price: ${price}`);
+
+          // NEW: Country/Region of origin lives on the InventoryItem
+          const countryCode = toCountryCode(countryOfOriginRaw);
+          if (countryCode) {
+            await setInventoryItemCountryOfOrigin(defaultVariant.id, countryCode);
+          }
         }
       } catch (variantErr) {
         console.warn('⚠️  Variant update warning:', variantErr.message);
@@ -646,10 +739,28 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
         shopifyProduct.id,
         'custom',
         'content_hub_product_id',
-        String(productId)
+        String(productId),
+        'number_integer'
       );
     } catch (metafieldErr) {
       console.warn('⚠️  Could not set Content Hub Product ID metafield:', metafieldErr.message);
+    }
+
+    // NEW: Set ProductType / Manufacturedby / Contact as text metafields
+    // (kept separate from the native `productType` field, which is still
+    // driven by props.Category above)
+    try {
+      if (productTypeField) {
+        await setProductMetafields(shopifyProduct.id, 'custom', 'product_type_custom', productTypeField);
+      }
+      if (manufacturedBy) {
+        await setProductMetafields(shopifyProduct.id, 'custom', 'manufactured_by', manufacturedBy);
+      }
+      if (contact) {
+        await setProductMetafields(shopifyProduct.id, 'custom', 'contact', contact);
+      }
+    } catch (metafieldErr) {
+      console.warn('⚠️  Could not set additional metafields:', metafieldErr.message);
     }
 
     // Write sync status back to Content Hub
@@ -677,7 +788,11 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       sku,
       imagesAttached: isNewProduct ? relatedAssets.length : 0,
       isUpdate: !!existingProduct,
-      descriptionUpdated: true
+      descriptionUpdated: true,
+      productType: productTypeField || null,
+      countryOfOrigin: toCountryCode(countryOfOriginRaw) || null,
+      manufacturedBy: manufacturedBy || null,
+      contact: contact || null
     };
   } catch (err) {
     console.error('❌ Product sync failed:', err.message);
@@ -710,18 +825,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
   let description = '';
   const descriptionProp = assetEntity?.properties?.Description;
   if (descriptionProp) {
-    if (typeof descriptionProp === 'string') {
-      description = descriptionProp.trim();
-    } else if (typeof descriptionProp === 'object' && Object.keys(descriptionProp).length > 0) {
-      if (descriptionProp['en-US']) {
-        description = descriptionProp['en-US'];
-      } else {
-        const firstValue = Object.values(descriptionProp)[0];
-        if (firstValue && typeof firstValue === 'string') {
-          description = firstValue;
-        }
-      }
-    }
+    description = extractLocalizedText(descriptionProp);
   }
 
   const input = {
@@ -805,7 +909,8 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
         shopifyProduct.id,
         'custom',
         'sitecore_content_hub_asset_id',
-        String(assetId)
+        String(assetId),
+        'number_integer'
       );
     } catch (metafieldErr) {
       console.warn('⚠️  Could not set Content Hub Asset ID metafield:', metafieldErr.message);
