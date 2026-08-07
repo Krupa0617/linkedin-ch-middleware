@@ -474,48 +474,145 @@ async function getRelatedAssets(productId, contentHubBaseUrl, token) {
 // so this same helper can be reused for text fields like
 // ProductType / Manufacturedby / Contact.
 // ─────────────────────────────────────────────
-async function setProductMetafields(productGid, namespace, key, value, type = 'single_line_text_field') {
+// ─────────────────────────────────────────────
+// Set Shopify Product Metafield
+// Creates the metafield if it doesn't exist,
+// otherwise updates the existing metafield.
+// ─────────────────────────────────────────────
+async function setProductMetafields(
+  productGid,
+  namespace,
+  key,
+  value,
+  type = 'single_line_text_field'
+) {
   try {
-    console.log(`📝 Setting metafield: ${key} = ${value}`);
+    console.log(`\n📝 Setting Shopify metafield`);
+    console.log(`   Namespace : ${namespace}`);
+    console.log(`   Key       : ${key}`);
+    console.log(`   Value     : ${value}`);
+    console.log(`   Type      : ${type}`);
 
     if (!productGid) {
-      console.warn(`⚠️  Cannot set metafield: productGid is missing`);
+      console.warn(`⚠️ Cannot set metafield: productGid is missing`);
       return false;
     }
 
-    // Extract product ID from GID (gid://shopify/Product/123456 -> 123456)
+    if (value === null || value === undefined || String(value).trim() === '') {
+      console.warn(`⚠️ Skipping empty metafield: ${namespace}.${key}`);
+      return false;
+    }
+
     const productId = productGid.split('/').pop();
 
     if (!productId) {
-      console.warn(`⚠️  Cannot set metafield: could not extract product ID from GID: ${productGid}`);
+      console.warn(
+        `⚠️ Could not extract product ID from GID: ${productGid}`
+      );
       return false;
     }
 
-    console.log(`   → Product ID: ${productId}, Namespace: ${namespace}, Key: ${key}, Type: ${type}`);
+    // ─────────────────────────────────────────
+    // 1. Check if metafield already exists
+    // ─────────────────────────────────────────
+    const existingResponse = await shopifyREST(
+      'GET',
+      `/products/${productId}/metafields.json?namespace=${encodeURIComponent(
+        namespace
+      )}&key=${encodeURIComponent(key)}`
+    );
 
-    const metafieldData = {
-      metafield: {
-        namespace: namespace,
-        key: key,
-        value: String(value),
-        type: type
+    const existingMetafield =
+      existingResponse?.metafields?.find(
+        (m) => m.namespace === namespace && m.key === key
+      );
+
+    // ─────────────────────────────────────────
+    // 2. Update existing metafield
+    // ─────────────────────────────────────────
+    if (existingMetafield) {
+      console.log(
+        `♻️ Existing metafield found: ${namespace}.${key}`
+      );
+      console.log(`   Metafield ID: ${existingMetafield.id}`);
+
+      const updateResponse = await shopifyREST(
+        'PUT',
+        `/products/${productId}/metafields/${existingMetafield.id}.json`,
+        {
+          metafield: {
+            id: existingMetafield.id,
+            value: String(value),
+            type: type
+          }
+        }
+      );
+
+      if (updateResponse?.metafield?.id) {
+        console.log(
+          `✅ Metafield UPDATED: ${namespace}.${key} = ${value}`
+        );
+        return true;
       }
-    };
 
-    const response = await shopifyREST('POST', `/products/${productId}/metafields.json`, metafieldData);
+      console.warn(
+        `⚠️ Unexpected update response:`,
+        JSON.stringify(updateResponse)
+      );
 
-    if (response?.metafield?.id) {
-      console.log(`✅ Metafield set successfully: ${key} (ID: ${response.metafield.id}, Value: ${response.metafield.value})`);
-      return true;
-    } else {
-      console.warn(`⚠️  Metafield response unexpected:`, JSON.stringify(response));
       return false;
     }
-  } catch (err) {
-    console.error(`❌ Metafield update failed for ${key}:`, err.message);
-    if (err.response?.data) {
-      console.error(`   Error details:`, JSON.stringify(err.response.data));
+
+    // ─────────────────────────────────────────
+    // 3. Create metafield if it doesn't exist
+    // ─────────────────────────────────────────
+    console.log(
+      `✨ Metafield does not exist. Creating ${namespace}.${key}`
+    );
+
+    const createResponse = await shopifyREST(
+      'POST',
+      `/products/${productId}/metafields.json`,
+      {
+        metafield: {
+          namespace,
+          key,
+          value: String(value),
+          type
+        }
+      }
+    );
+
+    if (createResponse?.metafield?.id) {
+      console.log(
+        `✅ Metafield CREATED: ${namespace}.${key} = ${value}`
+      );
+      console.log(
+        `   Shopify metafield ID: ${createResponse.metafield.id}`
+      );
+
+      return true;
     }
+
+    console.warn(
+      `⚠️ Unexpected create response:`,
+      JSON.stringify(createResponse)
+    );
+
+    return false;
+  } catch (err) {
+    console.error(
+      `❌ Metafield update failed for ${namespace}.${key}:`,
+      err.message
+    );
+
+    if (err.response?.data) {
+      console.error(
+        `   Shopify error:`,
+        JSON.stringify(err.response.data, null, 2)
+      );
+    }
+
     return false;
   }
 }
@@ -622,10 +719,39 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   const mapKey = `product-${productId}`;
 
   // NEW: pull the additional Content Hub fields
-  const productTypeField = extractLocalizedText(props.ProductType);
-  const countryOfOriginRaw = props.CountryofOrigin;
-  const manufacturedBy = extractLocalizedText(props.Manufacturedby);
-  const contact = extractLocalizedText(props.Contact);
+  const productTypeField = extractLocalizedText(
+  props.ProductType
+);
+
+const countryOfOriginRaw = props.CountryofOrigin;
+
+const manufacturedBy = extractLocalizedText(
+  props.Manufacturedby
+);
+
+const contact = extractLocalizedText(
+  props.Contact
+);
+
+console.log(`\n🔎 CONTENT HUB FIELD VALUES`);
+console.log(`   ProductType    RAW:`, JSON.stringify(props.ProductType));
+console.log(`   ProductType    VAL: "${productTypeField}"`);
+
+console.log(
+  `   Manufacturedby RAW:`,
+  JSON.stringify(props.Manufacturedby)
+);
+console.log(
+  `   Manufacturedby VAL: "${manufacturedBy}"`
+);
+
+console.log(
+  `   Contact        RAW:`,
+  JSON.stringify(props.Contact)
+);
+console.log(
+  `   Contact        VAL: "${contact}"`
+);
 
   console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
   console.log(`🎯 Product: ${title}`);
@@ -900,7 +1026,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
         console.warn('⚠️  Image attachment failed:', mediaErr.message);
       }
     } else if (!isNewProduct && imageUrl) {
-      console.log(`ℹ️  Skipping image attachment on update (prevents duplicate images)`);
+      console.log(`Skipping image attachment on update (prevents duplicate images)`);
     }
 
     // Set Content Hub Asset ID metafield
