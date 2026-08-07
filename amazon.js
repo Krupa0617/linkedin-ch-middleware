@@ -1,8 +1,3 @@
-/***********************************************************************
- * AMAZON SP-API + SITECORE CONTENT HUB
- * Single File Integration
- ***********************************************************************/
-
 import express from "express";
 import dotenv from "dotenv";
 import axios from "axios";
@@ -291,7 +286,86 @@ if (missing.length > 0) {
 }
 
 /***********************************************************************
- * Content Hub Action: /amazon/publish
+ * MIDDLEWARE: Verify API Key
+ ***********************************************************************/
+
+function verifyApiKey(req, res, next) {
+    const key = req.headers["x-api-key"];
+    if (!key || key !== API_SECRET_KEY) {
+        return res.status(401).json({ 
+            error: "Unauthorized",
+            message: "Missing or invalid x-api-key header"
+        });
+    }
+    next();
+}
+
+/***********************************************************************
+ * HEALTH CHECK ENDPOINTS
+ ***********************************************************************/
+
+// ✅ Simple health check (no auth required for testing connection)
+app.get("/health", (req, res) => {
+    res.status(200).json({
+        status: "ok",
+        service: "Amazon SP-API + Sitecore Content Hub Connector",
+        timestamp: new Date().toISOString()
+    });
+});
+
+// ✅ Amazon health check endpoint
+app.get("/amazon/health", verifyApiKey, (req, res) => {
+    res.status(200).json({
+        status: "ok",
+        endpoint: "/amazon/publish",
+        method: "POST",
+        description: "Publishes a Content Hub product to Amazon",
+        timestamp: new Date().toISOString()
+    });
+});
+
+// ✅ Amazon connection test (what Content Hub "Test Connection" calls)
+app.post("/amazon/", verifyApiKey, async (req, res) => {
+    try {
+        log("Received /amazon/ test request");
+        
+        // Test Content Hub connectivity
+        if (!CONTENT_HUB_URL) {
+            return res.status(400).json({
+                success: false,
+                error: "Content Hub URL not configured"
+            });
+        }
+
+        // Test Amazon authentication
+        try {
+            await getAmazonAccessToken();
+        } catch (err) {
+            return res.status(500).json({
+                success: false,
+                error: "Amazon authentication failed",
+                message: err.message
+            });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: "Connection successful",
+            service: "Amazon SP-API Connector",
+            ready: true
+        });
+    } catch (err) {
+        logError("/amazon/ test failed", err);
+        res.status(500).json({
+            success: false,
+            error: "Connection test failed",
+            message: err.message
+        });
+    }
+});
+
+/***********************************************************************
+ * Content Hub Action: POST /amazon/publish
  * Triggered from a Content Hub M.Action button on the Product entity
  ***********************************************************************/
 
@@ -680,14 +754,6 @@ async function pushListingToAmazon(sku, payload) {
 
     log("Amazon listing response", result);
     return result;
-}
-
-function verifyApiKey(req, res, next) {
-    const key = req.headers["x-api-key"];
-    if (!key || key !== API_SECRET_KEY) {
-        return res.status(401).json({ error: "Unauthorized" });
-    }
-    next();
 }
 
 async function syncProductToAmazon(productId) {
