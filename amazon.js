@@ -661,10 +661,10 @@ async function getAmazonAccessToken(forceRefresh = false) {
 
 async function callAmazonAPI({ method, path, params = {}, data = null }) {
     let attempt = 0;
-
+    console.log(`Calling Amazon API: ${method.toUpperCase()} ${path} (attempt ${attempt + 1}/${MAX_RETRY})`);
     while (attempt < MAX_RETRY) {
         try {
-            const accessToken = LWA_REFRESH_TOKEN;
+            const accessToken = await getAmazonAccessToken();//LWA_REFRESH_TOKEN;
 
             const response = await axios({
                 method,
