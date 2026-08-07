@@ -367,6 +367,7 @@ app.post("/amazon/", verifyApiKey, async (req, res) => {
 /***********************************************************************
  * Content Hub Action: POST /amazon/publish
  * Triggered from a Content Hub M.Action button on the Product entity
+ * Also handles connection tests when target_id is not present
  ***********************************************************************/
 
 app.post("/amazon/publish", verifyApiKey, async (req, res) => {
@@ -376,13 +377,36 @@ app.post("/amazon/publish", verifyApiKey, async (req, res) => {
 
     log("Received /amazon/publish request", { productId, headers: req.headers });
 
+    // ═══════════════════════════════════════════════════════════════
+    // HANDLE: Connection Test (no productId = Content Hub test)
+    // ═══════════════════════════════════════════════════════════════
     if (!productId) {
-        return res.status(400).json({
-            success: false,
-            error: "Missing target_id header"
-        });
+        log("Connection test request - validating Amazon connectivity");
+        
+        try {
+            // Test Amazon authentication
+            await getAmazonAccessToken();
+            
+            log("✅ Connection test passed");
+            return res.status(200).json({
+                success: true,
+                message: "Connection test successful",
+                service: "Amazon SP-API Connector",
+                ready: true
+            });
+        } catch (err) {
+            logError("Connection test failed - Amazon auth error", err);
+            return res.status(500).json({
+                success: false,
+                error: "Amazon authentication failed",
+                message: err.message
+            });
+        }
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // HANDLE: Actual Product Sync (productId present)
+    // ═══════════════════════════════════════════════════════════════
     try {
         const result = await syncProductToAmazon(productId);
 
