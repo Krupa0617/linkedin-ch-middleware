@@ -588,6 +588,7 @@ async function getAmazonAccessToken(forceRefresh = false) {
 
         }
 
+
         log("Requesting Amazon Access Token...");
 
         //---------------------------------------------------------
@@ -624,7 +625,7 @@ async function getAmazonAccessToken(forceRefresh = false) {
             }
 
         );
-
+        console.log(response.data);
         //---------------------------------------------------------
         // Save Token
         //---------------------------------------------------------
