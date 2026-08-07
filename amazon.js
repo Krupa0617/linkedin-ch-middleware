@@ -365,10 +365,21 @@ app.post("/amazon/", verifyApiKey, async (req, res) => {
 });
 
 /***********************************************************************
- * Content Hub Action: POST /amazon/publish
- * Triggered from a Content Hub M.Action button on the Product entity
+ * Content Hub Action: HEAD + POST /amazon/publish
+ * HEAD: Connection test (Content Hub prerequisite check)
+ * POST: Triggered from a Content Hub M.Action button on the Product entity
  * Also handles connection tests when target_id is not present
  ***********************************************************************/
+
+// HEAD request for connection test
+app.head("/amazon/publish", verifyApiKey, async (req, res) => {
+    try {
+        await getAmazonAccessToken(true);
+        res.status(200).end();
+    } catch (err) {
+        res.status(500).end();
+    }
+});
 
 app.post("/amazon/publish", verifyApiKey, async (req, res) => {
 
