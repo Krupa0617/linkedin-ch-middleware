@@ -38,16 +38,16 @@ const {
     // Amazon Seller
     //==================================================
 
-    AMAZON_SELLER_ID,
-    AMAZON_MARKETPLACE_ID,
+    AMAZON_SELLER_ID = process.env.AMAZON_SELLER_ID,
+    AMAZON_MARKETPLACE_ID = process.env.AMAZON_MARKETPLACE_ID,
 
     //==================================================
     // Login With Amazon
     //==================================================
 
-    LWA_CLIENT_ID,
-    LWA_CLIENT_SECRET,
-    LWA_REFRESH_TOKEN,
+    LWA_CLIENT_ID = process.env.LWA_CLIENT_ID,
+    LWA_CLIENT_SECRET = process.env.LWA_CLIENT_SECRET,
+    LWA_REFRESH_TOKEN =  process.env.LWA_REFRESH_TOKEN,
 
     //==================================================
     // Optional
@@ -56,6 +56,7 @@ const {
     AMAZON_ENV = "PRODUCTION"
 
 } = process.env;
+
 
 const IS_SANDBOX =
     AMAZON_ENV === "SANDBOX";
@@ -722,3 +723,9 @@ app.post("/sync-product/:productId", verifyApiKey, async (req, res) => {
         });
     }
 });
+
+/***********************************************************************
+ * Export for Vercel
+ ***********************************************************************/
+
+export default app;

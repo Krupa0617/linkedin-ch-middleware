@@ -5,6 +5,7 @@
     { "src": "instaindex.js",   "use": "@vercel/node" },
     { "src": "figma.js",        "use": "@vercel/node" },
     { "src": "pdf-product-association.js", "use": "@vercel/node" },
+    { "src": "amazon.js", "use": "@vercel/node" },
     { "src": "shopify.js",      "use": "@vercel/node" }
   ],
   "routes": [
@@ -15,6 +16,7 @@
     { "src": "/auth/linkedin/(.*)", "dest": "index.js" },
     { "src": "/linkedin/(.*)",     "dest": "index.js" },
     { "src": "/shopify/(.*)",      "dest": "shopify.js" },
+    { "src": "/amazon/(.*)",      "dest": "amazon.js" },
     { "src": "/(.*)",              "dest": "index.js" }
   ]
 }
