@@ -662,7 +662,7 @@ async function getAmazonAccessToken(forceRefresh = false) {
 
 async function callAmazonAPI({ method, path, params = {}, data = null }) {
     let attempt = 0;
-    console.log(`Calling Amazon API: ${method.toUpperCase()} ${path} (attempt ${attempt + 1}/${MAX_RETRY})`);
+    console.log(`Calling Amazon API: ${AMAZON_API}  ${method.toUpperCase()} ${path} (attempt ${attempt + 1}/${MAX_RETRY})`);
     while (attempt < MAX_RETRY) {
         try {
             const accessToken = await getAmazonAccessToken();//LWA_REFRESH_TOKEN;
@@ -673,11 +673,12 @@ async function callAmazonAPI({ method, path, params = {}, data = null }) {
                 params,
                 data,
                 httpsAgent,
-                headers: {
-                    ...DEFAULT_HEADERS,
-                    ...AMAZON_HEADERS,
-                    "x-amz-access-token": accessToken
-                },
+              headers: {
+                  Accept: "application/json",
+                  "Content-Type": "application/json",
+                  "x-amz-access-token": accessToken,
+                  Authorization: `Bearer ${accessToken}`
+              },
                 timeout: 30000
             });
 
