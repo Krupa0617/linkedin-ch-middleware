@@ -119,7 +119,7 @@ const httpsAgent = new https.Agent({
 
 const AMAZON_API = IS_SANDBOX
 ?
-"https://sandbox.sellingpartnerapi-na.amazon.com"
+"https://sandbox.sellingpartnerapi-fe.amazon.com"
 :
 MARKETPLACE.endpoint;
 
