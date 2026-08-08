@@ -20,34 +20,21 @@ const {
   SHOPIFY_STORE_DOMAIN,
   SHOPIFY_CLIENT_ID,
   SHOPIFY_CLIENT_SECRET,
-  SHOPIFY_API_VERSION,
-  DATA_DIR,
-
-  // ── NEW: Key Ingredients configuration ──────────────────────
-  // Verify these against your actual Content Hub schema
-  // (Admin > Configuration > Entity definitions) before running.
-  CH_INGREDIENT_DEFINITION_NAME,   // e.g. "M.KeyIngredients"
-  CH_INGREDIENT_RELATION_NAME,     // e.g. "PCMProductToKeyIngredients" (screenshot shows "KeyIngredients")
-  CH_INGREDIENT_IMAGE_RELATION_NAME, // relation from ingredient entity -> M.Asset for IngredientImage, if it's a link field rather than inline
-
-  // Shopify side
-  SHOPIFY_INGREDIENT_METAOBJECT_TYPE,      // metaobject type handle, e.g. "key_ingredients"
-  SHOPIFY_KEY_INGREDIENTS_METAFIELD_NAMESPACE, // e.g. "custom"
-  SHOPIFY_KEY_INGREDIENTS_METAFIELD_KEY         // e.g. "key_ingredients" (must match the definition's key exactly)
+  DATA_DIR
 } = process.env;
 
-const SHOPIFY_VERSION = SHOPIFY_API_VERSION || '2026-07';
+const SHOPIFY_VERSION = '2026-07';
 
-// Defaults — override in .env once you've confirmed the real names in Content Hub / Shopify
-const INGREDIENT_DEFINITION_NAME = CH_INGREDIENT_DEFINITION_NAME || 'M.KeyIngredients';
+// Key Ingredients configuration — hardcoded (no .env entries needed).
 // Confirmed from your Content Hub instance: the relation is "KeyIngredients",
 // accessed directly at /api/entities/{productId}/relations/KeyIngredients
-const INGREDIENT_RELATION_NAME = CH_INGREDIENT_RELATION_NAME || 'KeyIngredients';
-const INGREDIENT_IMAGE_RELATION_NAME = CH_INGREDIENT_IMAGE_RELATION_NAME || 'KeyIngredientsToImageAsset';
+const INGREDIENT_RELATION_NAME = 'KeyIngredients';
+// Confirmed from schema: "KeyIngredients is Parent of M.Asset" via the "IngredientImage" relation
+const INGREDIENT_IMAGE_RELATION_NAME = 'IngredientImage';
 
-const INGREDIENT_METAOBJECT_TYPE = SHOPIFY_INGREDIENT_METAOBJECT_TYPE || 'key_ingredients';
-const KEY_INGREDIENTS_METAFIELD_NAMESPACE = SHOPIFY_KEY_INGREDIENTS_METAFIELD_NAMESPACE || 'custom';
-const KEY_INGREDIENTS_METAFIELD_KEY = SHOPIFY_KEY_INGREDIENTS_METAFIELD_KEY || 'key_ingredients';
+const INGREDIENT_METAOBJECT_TYPE = 'key_ingredients';
+const KEY_INGREDIENTS_METAFIELD_NAMESPACE = 'custom';
+const KEY_INGREDIENTS_METAFIELD_KEY = 'key_ingredients';
 
 // ─────────────────────────────────────────────
 // FIX: Persistent Content Hub entity → Shopify product mapping
@@ -507,36 +494,29 @@ async function getRelatedIngredients(productId, contentHubBaseUrl, token) {
     const response = await axios.get(
       `${contentHubBaseUrl}/api/entities/${productId}/relations/${INGREDIENT_RELATION_NAME}`,
       {
+        params: { take: 100, skip: 0 },
         headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' },
         timeout: 10000
       }
     );
 
-    // Content Hub's relations endpoint commonly returns either
-    // { totalItems, items: [...] } or a bare array — handle both.
-    const relationItems = response.data?.items || (Array.isArray(response.data) ? response.data : []);
+    // Confirmed shape: { children: [ { href: ".../entities/41671" }, ... ], self: {...} }
+    const relationItems = response.data?.children || [];
     console.log(`   ✅ Relation endpoint returned ${relationItems.length} item(s)`);
-    // Uncomment for one-off debugging of the raw shape returned by your instance:
-    // console.log('   Raw relation payload:', JSON.stringify(response.data));
 
     const ingredients = [];
     for (let i = 0; i < relationItems.length; i++) {
       try {
         const item = relationItems[i];
+        const ingredientId = extractIdFromHref(item?.href);
 
-        // Some Content Hub versions inline full entity data on relation items,
-        // others return a lightweight stub with just id/href — handle both.
-        const hasInlineProps = item?.properties && Object.keys(item.properties).length > 0;
-        let ingredientEntity = item;
-
-        if (!hasInlineProps) {
-          const ingredientId = item?.id || extractIdFromHref(item?.href || item?.self);
-          if (!ingredientId) {
-            console.warn(`⚠️ Ingredient relation item #${i}: no id/href found, skipping`);
-            continue;
-          }
-          ingredientEntity = await getEntity(ingredientId, contentHubBaseUrl, token);
+        if (!ingredientId) {
+          console.warn(`⚠️ Ingredient relation item #${i}: no id found in href, skipping`);
+          continue;
         }
+
+        // Children are bare hrefs — always fetch the full entity
+        const ingredientEntity = await getEntity(ingredientId, contentHubBaseUrl, token);
 
         const props = ingredientEntity?.properties || {};
         const ingredientData = {
@@ -572,7 +552,8 @@ async function getRelatedIngredients(productId, contentHubBaseUrl, token) {
 // (in case it's stored directly) and a linked M.Asset entity as fallback.
 // ─────────────────────────────────────────────
 async function resolveIngredientImageUrl(ingredientEntity, contentHubBaseUrl, token) {
-  // Case 1: renditions exist directly on the ingredient entity
+  // Case 1: renditions exist directly on the ingredient entity (unlikely given
+  // the schema, but cheap to check first)
   const directRenditions = ingredientEntity?.renditions;
   if (directRenditions && typeof directRenditions === 'object') {
     const directUrl = directRenditions.downloadOriginal?.[0]?.href
@@ -580,27 +561,30 @@ async function resolveIngredientImageUrl(ingredientEntity, contentHubBaseUrl, to
     if (directUrl) return directUrl;
   }
 
-  // Case 2: IngredientImage is a linked M.Asset entity via a relation
+  // Case 2: IngredientImage is a relation from the ingredient entity to M.Asset
+  // ("KeyIngredients is Parent of M.Asset"), using the same
+  // /relations/{name} -> { children: [{href}] } shape as KeyIngredients itself.
   try {
-    const query = `Definition.Name=='M.Asset' AND Parent('${INGREDIENT_IMAGE_RELATION_NAME}').id==${ingredientEntity.id}`;
     const response = await axios.get(
-      `${contentHubBaseUrl}/api/entities/query`,
+      `${contentHubBaseUrl}/api/entities/${ingredientEntity.id}/relations/${INGREDIENT_IMAGE_RELATION_NAME}`,
       {
-        params: { query },
+        params: { take: 10, skip: 0 },
         headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' },
         timeout: 10000
       }
     );
-    const assetEntity = response.data?.items?.[0];
-    if (assetEntity) {
-      const { imageUrl } = extractAssetImage(assetEntity);
-      return imageUrl;
-    }
-  } catch (err) {
-    console.warn(`⚠️  Could not resolve IngredientImage for ingredient ${ingredientEntity.id}:`, err.message);
-  }
 
-  return null;
+    const assetHref = response.data?.children?.[0]?.href;
+    const assetId = extractIdFromHref(assetHref);
+    if (!assetId) return null;
+
+    const assetEntity = await getEntity(assetId, contentHubBaseUrl, token);
+    const { imageUrl } = extractAssetImage(assetEntity);
+    return imageUrl;
+  } catch (err) {
+    console.warn(`⚠️  Could not resolve IngredientImage for ingredient ${ingredientEntity.id}:`, err.response?.status, err.message);
+    return null;
+  }
 }
 
 // ─────────────────────────────────────────────
