@@ -278,8 +278,7 @@ function extractAssetImage(entity) {
 }
 
 // ─────────────────────────────────────────────
-// NEW: Helper to pull a possibly-localized text property
-// off a Content Hub entity (e.g. { "en-US": "value" } or plain string)
+// Helper: Extract localized text property
 // ─────────────────────────────────────────────
 function extractLocalizedText(value) {
   if (!value) return '';
@@ -293,10 +292,7 @@ function extractLocalizedText(value) {
 }
 
 // ─────────────────────────────────────────────
-// NEW: Country name -> ISO 3166-1 alpha-2 code
-// Shopify's "Country/Region of origin" field (on the InventoryItem)
-// requires a 2-letter code. Extend this map as new countries show up
-// in Content Hub data.
+// Country name -> ISO 3166-1 alpha-2 code
 // ─────────────────────────────────────────────
 const COUNTRY_NAME_TO_ISO = {
   'india': 'IN',
@@ -334,7 +330,7 @@ function toCountryCode(rawValue) {
 }
 
 // ─────────────────────────────────────────────
-// Direct product lookup by GID (no search-index lag)
+// Direct product lookup by GID
 // ─────────────────────────────────────────────
 const PRODUCT_BY_ID_QUERY = `
   query getProductById($id: ID!) {
@@ -468,16 +464,8 @@ async function getRelatedAssets(productId, contentHubBaseUrl, token) {
 }
 
 // ─────────────────────────────────────────────
-// Helper: Set product metafields using REST API
-// Updates Content Hub tracking + custom text metafields
-// UPDATED: `type` is now a parameter (was hardcoded to number_integer)
-// so this same helper can be reused for text fields like
-// ProductType / Manufacturedby / Contact.
-// ─────────────────────────────────────────────
-// ─────────────────────────────────────────────
 // Set Shopify Product Metafield
-// Creates the metafield if it doesn't exist,
-// otherwise updates the existing metafield.
+// FIX: Don't send type on UPDATE (type is locked to definition)
 // ─────────────────────────────────────────────
 async function setProductMetafields(
   productGid,
@@ -506,9 +494,7 @@ async function setProductMetafields(
     const productId = productGid.split('/').pop();
 
     if (!productId) {
-      console.warn(
-        `⚠️ Could not extract product ID from GID: ${productGid}`
-      );
+      console.warn(`⚠️ Could not extract product ID from GID: ${productGid}`);
       return false;
     }
 
@@ -522,53 +508,44 @@ async function setProductMetafields(
       )}&key=${encodeURIComponent(key)}`
     );
 
-    const existingMetafield =
-      existingResponse?.metafields?.find(
-        (m) => m.namespace === namespace && m.key === key
-      );
+    const existingMetafield = existingResponse?.metafields?.find(
+      (m) => m.namespace === namespace && m.key === key
+    );
 
     // ─────────────────────────────────────────
     // 2. Update existing metafield
     // ─────────────────────────────────────────
     if (existingMetafield) {
-      console.log(
-        `♻️ Existing metafield found: ${namespace}.${key}`
-      );
+      console.log(`♻️ Existing metafield found: ${namespace}.${key}`);
       console.log(`   Metafield ID: ${existingMetafield.id}`);
+      console.log(`   Existing type: ${existingMetafield.type}`);
 
+      // FIX: Do NOT send type on update - it's locked to the definition
       const updateResponse = await shopifyREST(
         'PUT',
         `/products/${productId}/metafields/${existingMetafield.id}.json`,
         {
           metafield: {
             id: existingMetafield.id,
-            value: String(value),
-            type: type
+            value: String(value)
+            // ⚠️ Type is NOT included - it cannot be changed on update!
           }
         }
       );
 
       if (updateResponse?.metafield?.id) {
-        console.log(
-          `✅ Metafield UPDATED: ${namespace}.${key} = ${value}`
-        );
+        console.log(`✅ Metafield UPDATED: ${namespace}.${key} = ${value}`);
         return true;
       }
 
-      console.warn(
-        `⚠️ Unexpected update response:`,
-        JSON.stringify(updateResponse)
-      );
-
+      console.warn(`⚠️ Unexpected update response:`, JSON.stringify(updateResponse));
       return false;
     }
 
     // ─────────────────────────────────────────
     // 3. Create metafield if it doesn't exist
     // ─────────────────────────────────────────
-    console.log(
-      `✨ Metafield does not exist. Creating ${namespace}.${key}`
-    );
+    console.log(`✨ Metafield does not exist. Creating ${namespace}.${key}`);
 
     const createResponse = await shopifyREST(
       'POST',
@@ -578,39 +555,24 @@ async function setProductMetafields(
           namespace,
           key,
           value: String(value),
-          type
+          type // Type is included on CREATE
         }
       }
     );
 
     if (createResponse?.metafield?.id) {
-      console.log(
-        `✅ Metafield CREATED: ${namespace}.${key} = ${value}`
-      );
-      console.log(
-        `   Shopify metafield ID: ${createResponse.metafield.id}`
-      );
-
+      console.log(`✅ Metafield CREATED: ${namespace}.${key} = ${value}`);
+      console.log(`   Shopify metafield ID: ${createResponse.metafield.id}`);
       return true;
     }
 
-    console.warn(
-      `⚠️ Unexpected create response:`,
-      JSON.stringify(createResponse)
-    );
-
+    console.warn(`⚠️ Unexpected create response:`, JSON.stringify(createResponse));
     return false;
   } catch (err) {
-    console.error(
-      `❌ Metafield update failed for ${namespace}.${key}:`,
-      err.message
-    );
+    console.error(`❌ Metafield update failed for ${namespace}.${key}:`, err.message);
 
     if (err.response?.data) {
-      console.error(
-        `   Shopify error:`,
-        JSON.stringify(err.response.data, null, 2)
-      );
+      console.error(`   Shopify error:`, JSON.stringify(err.response.data, null, 2));
     }
 
     return false;
@@ -618,9 +580,7 @@ async function setProductMetafields(
 }
 
 // ─────────────────────────────────────────────
-// NEW: Set the Country/Region of origin on a variant's InventoryItem
-// This is the field shown in the Shopify admin under
-// Product > More details > Country/Region of origin.
+// Set Country/Region of origin on InventoryItem
 // ─────────────────────────────────────────────
 async function setInventoryItemCountryOfOrigin(variantId, countryCode) {
   try {
@@ -645,7 +605,7 @@ async function setInventoryItemCountryOfOrigin(variantId, countryCode) {
 }
 
 // ─────────────────────────────────────────────
-// Helper: Build Shopify media input
+// Build Shopify media input
 // ─────────────────────────────────────────────
 function buildMediaInput(assets) {
   return assets.map((a) => ({
@@ -706,8 +666,6 @@ const PRODUCT_CREATE_MEDIA_MUTATION = `
 
 // ─────────────────────────────────────────────
 // Handle product creation/update
-// FIX #10: Improved description handling and no duplicate images on update
-// NEW: ProductType / CountryofOrigin / Manufacturedby / Contact mapping
 // ─────────────────────────────────────────────
 async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   const productEntity = await getEntity(productId, contentHubBaseUrl, chToken);
@@ -718,40 +676,19 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   const price = props.Price || '0.00';
   const mapKey = `product-${productId}`;
 
-  // NEW: pull the additional Content Hub fields
-  const productTypeField = extractLocalizedText(
-  props.ProductType
-);
+  // Extract Content Hub fields
+  const productTypeField = extractLocalizedText(props.ProductType);
+  const countryOfOriginRaw = props.CountryofOrigin;
+  const manufacturedBy = extractLocalizedText(props.Manufacturedby);
+  const contact = extractLocalizedText(props.Contact);
 
-const countryOfOriginRaw = props.CountryofOrigin;
-
-const manufacturedBy = extractLocalizedText(
-  props.Manufacturedby
-);
-
-const contact = extractLocalizedText(
-  props.Contact
-);
-
-console.log(`\n🔎 CONTENT HUB FIELD VALUES`);
-console.log(`   ProductType    RAW:`, JSON.stringify(props.ProductType));
-console.log(`   ProductType    VAL: "${productTypeField}"`);
-
-console.log(
-  `   Manufacturedby RAW:`,
-  JSON.stringify(props.Manufacturedby)
-);
-console.log(
-  `   Manufacturedby VAL: "${manufacturedBy}"`
-);
-
-console.log(
-  `   Contact        RAW:`,
-  JSON.stringify(props.Contact)
-);
-console.log(
-  `   Contact        VAL: "${contact}"`
-);
+  console.log(`\n🔎 CONTENT HUB FIELD VALUES`);
+  console.log(`   ProductType    RAW:`, JSON.stringify(props.ProductType));
+  console.log(`   ProductType    VAL: "${productTypeField}"`);
+  console.log(`   Manufacturedby RAW:`, JSON.stringify(props.Manufacturedby));
+  console.log(`   Manufacturedby VAL: "${manufacturedBy}"`);
+  console.log(`   Contact        RAW:`, JSON.stringify(props.Contact));
+  console.log(`   Contact        VAL: "${contact}"`);
 
   console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
   console.log(`🎯 Product: ${title}`);
@@ -766,15 +703,11 @@ console.log(
   const existingProduct = await findExistingShopifyProduct(mapKey, sku);
   const relatedAssets = await getRelatedAssets(productId, contentHubBaseUrl, chToken);
 
-  // FIX #10: Improved description extraction - check multiple fields
+  // Extract description
   let description = '';
-
-  // Priority 1: ProductLongDescription (if localized)
   if (props.ProductLongDescription) {
     description = extractLocalizedText(props.ProductLongDescription);
-  }
-  // Priority 2: Description field
-  else if (props.Description) {
+  } else if (props.Description) {
     description = extractLocalizedText(props.Description);
   }
 
@@ -814,12 +747,12 @@ console.log(
       console.log(`✅ Product created`);
     }
 
-    // Persist the mapping immediately
+    // Persist the mapping
     if (shopifyProduct?.id) {
       setMappedProductGid(mapKey, shopifyProduct.id);
     }
 
-    // Set SKU and price on variant, and NEW: country of origin
+    // Set SKU, price, and country of origin
     if (shopifyProduct?.id) {
       try {
         const productRestId = shopifyProduct.id.split('/').pop();
@@ -832,7 +765,6 @@ console.log(
           });
           console.log(`✅ SKU: "${sku}", Price: ${price}`);
 
-          // NEW: Country/Region of origin lives on the InventoryItem
           const countryCode = toCountryCode(countryOfOriginRaw);
           if (countryCode) {
             await setInventoryItemCountryOfOrigin(defaultVariant.id, countryCode);
@@ -843,11 +775,11 @@ console.log(
       }
     }
 
-    // FIX #10: Only attach images on NEW products to prevent duplicates
+    // Attach images only on new products
     if (isNewProduct && relatedAssets.length > 0) {
       try {
         const mediaInput = buildMediaInput(relatedAssets);
-        const mediaData = await shopifyGraphQL(PRODUCT_CREATE_MEDIA_MUTATION, {
+        await shopifyGraphQL(PRODUCT_CREATE_MEDIA_MUTATION, {
           productId: shopifyProduct.id,
           media: mediaInput
         });
@@ -872,49 +804,49 @@ console.log(
       console.warn('⚠️  Could not set Content Hub Product ID metafield:', metafieldErr.message);
     }
 
-    // NEW: Set ProductType / Manufacturedby / Contact as text metafields
-    // (kept separate from the native `productType` field, which is still
-    // driven by props.Category above)
+    // Set ProductType / Manufacturedby / Contact metafields
+    // Determine type based on content length for CREATE operations
     try {
-  if (productTypeField) {
-    // Trim and use single_line for short fields
-    const trimmedType = productTypeField.trim();
-    await setProductMetafields(
-      shopifyProduct.id, 
-      'custom', 
-      'product_type_custom', 
-      trimmedType,
-      'single_line_text_field'
-    );
-  }
-  
-  if (manufacturedBy) {
-    // Trim whitespace and choose type based on length
-    const trimmedMfg = manufacturedBy.trim();
-    const typeForMfg = trimmedMfg.length > 255 ? 'multi_line_text_field' : 'single_line_text_field';
-    await setProductMetafields(
-      shopifyProduct.id, 
-      'custom', 
-      'manufactured_by', 
-      trimmedMfg,
-      typeForMfg
-    );
-  }
-  
-  if (contact) {
-    // Contact is definitely long, use multi_line_text_field
-    const trimmedContact = contact.trim();
-    await setProductMetafields(
-      shopifyProduct.id, 
-      'custom', 
-      'contact', 
-      trimmedContact,
-      'multi_line_text_field'  // ← This is the key fix
-    );
-  }
-} catch (metafieldErr) {
-  console.warn('⚠️  Could not set additional metafields:', metafieldErr.message);
-}
+      if (productTypeField) {
+        const trimmedType = productTypeField.trim();
+        // For single line fields, use single_line_text_field (max 255 chars)
+        await setProductMetafields(
+          shopifyProduct.id,
+          'custom',
+          'product_type_custom',
+          trimmedType,
+          'single_line_text_field'
+        );
+      }
+
+      if (manufacturedBy) {
+        const trimmedMfg = manufacturedBy.trim();
+        // Choose type based on length for CREATE, but on UPDATE it won't change
+        const typeForMfg = trimmedMfg.length > 255 ? 'multi_line_text_field' : 'single_line_text_field';
+        await setProductMetafields(
+          shopifyProduct.id,
+          'custom',
+          'manufactured_by',
+          trimmedMfg,
+          typeForMfg
+        );
+      }
+
+      if (contact) {
+        const trimmedContact = contact.trim();
+        // Contact is always long, use multi_line_text_field
+        await setProductMetafields(
+          shopifyProduct.id,
+          'custom',
+          'contact',
+          trimmedContact,
+          'multi_line_text_field'
+        );
+      }
+    } catch (metafieldErr) {
+      console.warn('⚠️  Could not set additional metafields:', metafieldErr.message);
+    }
+
     // Write sync status back to Content Hub
     try {
       await axios.put(
@@ -1013,7 +945,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
       console.log(`✅ Product created`);
     }
 
-    // Persist the mapping immediately
+    // Persist the mapping
     if (shopifyProduct?.id) {
       setMappedProductGid(mapKey, shopifyProduct.id);
     }
@@ -1036,10 +968,10 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
       }
     }
 
-    // FIX #10: Only attach image on NEW products to prevent duplicates
+    // Attach image only on new products
     if (isNewProduct && imageUrl) {
       try {
-        const mediaData = await shopifyGraphQL(PRODUCT_CREATE_MEDIA_MUTATION, {
+        await shopifyGraphQL(PRODUCT_CREATE_MEDIA_MUTATION, {
           productId: shopifyProduct.id,
           media: [{
             originalSource: imageUrl,
@@ -1102,7 +1034,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
 }
 
 // ─────────────────────────────────────────────
-// Main route
+// Main webhook route
 // ─────────────────────────────────────────────
 app.post('/shopify/publish', async (req, res) => {
   const webhookId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
