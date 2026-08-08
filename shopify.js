@@ -593,7 +593,7 @@ async function resolveIngredientImageUrl(ingredientEntity, contentHubBaseUrl, to
 // metaobject definition's field keys under Settings > Custom data > Metaobjects.
 // ─────────────────────────────────────────────
 const CREATE_METAOBJECT_MUTATION = `
-  mutation createMetaobject($metaobject: MetaobjectInput!) {
+  mutation createMetaobject($metaobject: MetaobjectCreateInput!) {
     metaobjectCreate(metaobject: $metaobject) {
       metaobject {
         id
@@ -608,7 +608,7 @@ const CREATE_METAOBJECT_MUTATION = `
 `;
 
 const UPDATE_METAOBJECT_MUTATION = `
-  mutation updateMetaobject($id: ID!, $metaobject: MetaobjectInput!) {
+  mutation updateMetaobject($id: ID!, $metaobject: MetaobjectUpdateInput!) {
     metaobjectUpdate(id: $id, metaobject: $metaobject) {
       metaobject {
         id
@@ -661,20 +661,17 @@ async function createOrUpdateIngredientMetaobject(ingredient) {
       fields.push({ key: 'ingredient_image', value: ingredient.imageUrl });
     }
 
-    const metaobjectInput = {
-      type: INGREDIENT_METAOBJECT_TYPE,
-      fields,
-      capabilities: {
-        publishable: { status: 'ACTIVE' }
-      }
-    };
-
     let result;
     if (existingMetaobjectId) {
+      // MetaobjectUpdateInput only accepts fields/capabilities — type and
+      // handle are immutable once the metaobject exists.
       console.log(`♻️ Updating metaobject: ${existingMetaobjectId}`);
       const data = await shopifyGraphQL(UPDATE_METAOBJECT_MUTATION, {
         id: existingMetaobjectId,
-        metaobject: metaobjectInput
+        metaobject: {
+          fields,
+          capabilities: { publishable: { status: 'ACTIVE' } }
+        }
       });
 
       if (data.metaobjectUpdate?.userErrors?.length) {
@@ -683,12 +680,16 @@ async function createOrUpdateIngredientMetaobject(ingredient) {
       result = data.metaobjectUpdate.metaobject;
       console.log(`✅ Key Ingredient metaobject UPDATED: ${ingredient.title}`);
     } else {
-      // Stable, deterministic handle so re-syncs update instead of duplicating
-      metaobjectInput.handle = `ingredient-${ingredient.id}`;
-
+      // MetaobjectCreateInput requires type, and accepts an optional handle.
+      // Stable, deterministic handle so re-syncs update instead of duplicating.
       console.log(`✨ Creating new metaobject for: ${ingredient.title}`);
       const data = await shopifyGraphQL(CREATE_METAOBJECT_MUTATION, {
-        metaobject: metaobjectInput
+        metaobject: {
+          type: INGREDIENT_METAOBJECT_TYPE,
+          handle: `ingredient-${ingredient.id}`,
+          fields,
+          capabilities: { publishable: { status: 'ACTIVE' } }
+        }
       });
 
       if (data.metaobjectCreate?.userErrors?.length) {
