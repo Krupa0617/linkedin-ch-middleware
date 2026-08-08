@@ -876,19 +876,45 @@ console.log(
     // (kept separate from the native `productType` field, which is still
     // driven by props.Category above)
     try {
-      if (productTypeField) {
-        await setProductMetafields(shopifyProduct.id, 'custom', 'product_type_custom', productTypeField);
-      }
-      if (manufacturedBy) {
-        await setProductMetafields(shopifyProduct.id, 'custom', 'manufactured_by', manufacturedBy);
-      }
-      if (contact) {
-        await setProductMetafields(shopifyProduct.id, 'custom', 'contact', contact);
-      }
-    } catch (metafieldErr) {
-      console.warn('⚠️  Could not set additional metafields:', metafieldErr.message);
-    }
-
+  if (productTypeField) {
+    // Trim and use single_line for short fields
+    const trimmedType = productTypeField.trim();
+    await setProductMetafields(
+      shopifyProduct.id, 
+      'custom', 
+      'product_type_custom', 
+      trimmedType,
+      'single_line_text_field'
+    );
+  }
+  
+  if (manufacturedBy) {
+    // Trim whitespace and choose type based on length
+    const trimmedMfg = manufacturedBy.trim();
+    const typeForMfg = trimmedMfg.length > 255 ? 'multi_line_text_field' : 'single_line_text_field';
+    await setProductMetafields(
+      shopifyProduct.id, 
+      'custom', 
+      'manufactured_by', 
+      trimmedMfg,
+      typeForMfg
+    );
+  }
+  
+  if (contact) {
+    // Contact is definitely long, use multi_line_text_field
+    const trimmedContact = contact.trim();
+    await setProductMetafields(
+      shopifyProduct.id, 
+      'custom', 
+      'contact', 
+      trimmedContact,
+      'multi_line_text_field'  // ← This is the key fix
+    );
+  }
+} catch (metafieldErr) {
+  console.warn('⚠️  Could not set additional metafields:', metafieldErr.message);
+}
     // Write sync status back to Content Hub
     try {
       await axios.put(
