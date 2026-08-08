@@ -804,8 +804,7 @@ async function createOrUpdateIngredientMetaobject(ingredient) {
         //   - 'ingredientImage'
         //   - 'ingredient_picture'
         // Check your metaobject definition to find the exact key!
-        const imageFieldKey = 'ingredient_image';  // ← UPDATE THIS LINE
-        fields.push({ key: imageFieldKey, value: fileGid });
+        fields.push({ key: 'ingredientimage', value: fileGid });
       }
     }
 
