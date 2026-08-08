@@ -40,7 +40,9 @@ const SHOPIFY_VERSION = SHOPIFY_API_VERSION || '2026-07';
 
 // Defaults — override in .env once you've confirmed the real names in Content Hub / Shopify
 const INGREDIENT_DEFINITION_NAME = CH_INGREDIENT_DEFINITION_NAME || 'M.KeyIngredients';
-const INGREDIENT_RELATION_NAME = CH_INGREDIENT_RELATION_NAME || 'PCMProductToKeyIngredients';
+// Confirmed from your Content Hub instance: the relation is "KeyIngredients",
+// accessed directly at /api/entities/{productId}/relations/KeyIngredients
+const INGREDIENT_RELATION_NAME = CH_INGREDIENT_RELATION_NAME || 'KeyIngredients';
 const INGREDIENT_IMAGE_RELATION_NAME = CH_INGREDIENT_IMAGE_RELATION_NAME || 'KeyIngredientsToImageAsset';
 
 const INGREDIENT_METAOBJECT_TYPE = SHOPIFY_INGREDIENT_METAOBJECT_TYPE || 'key_ingredients';
@@ -483,88 +485,81 @@ async function getRelatedAssets(productId, contentHubBaseUrl, token) {
 }
 
 // ─────────────────────────────────────────────
-// DIAGNOSTIC: List every relation name Content Hub exposes on an entity.
-// Run once against a product that has ingredients attached (e.g. Galactosure,
-// entity 36294) to find the exact relation name to put in .env — the console
-// output will show something like: 📎 Available relations: ["ProductToAsset",
-// "ProductToDocument", "ActualRelationNameHere", ...]
+// Helper: pull the numeric entity id out of a Content Hub href
+// e.g. ".../api/entities/12345" -> "12345"
 // ─────────────────────────────────────────────
-async function logAvailableRelations(entity) {
-  try {
-    const relationKeys = entity?.relations ? Object.keys(entity.relations) : [];
-    console.log(`📎 Available relations on entity ${entity?.id}:`, JSON.stringify(relationKeys));
-
-    // Also try the dedicated relations endpoint as a fallback / cross-check
-  } catch (err) {
-    console.warn('⚠️  Could not enumerate relations:', err.message);
-  }
-}
-
-async function logRelationsFromApi(entityId, contentHubBaseUrl, token) {
-  try {
-    const response = await axios.get(
-      `${contentHubBaseUrl}/api/entities/${entityId}/relations`,
-      { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' }, timeout: 10000 }
-    );
-    console.log(`📎 /relations endpoint for entity ${entityId}:`, JSON.stringify(response.data));
-  } catch (err) {
-    console.warn(`⚠️  /relations endpoint not available or failed:`, err.response?.status, err.message);
-  }
+function extractIdFromHref(href) {
+  if (!href) return null;
+  const match = String(href).match(/\/entities\/(\d+)/);
+  return match ? match[1] : null;
 }
 
 // ─────────────────────────────────────────────
-// UPDATED: Fetch related Key Ingredients from Content Hub
-// Matches the "Add Key Ingredients" entry form: Title, Description, IngredientImage
+// UPDATED: Fetch related Key Ingredients from Content Hub via the direct
+// relations sub-resource: GET /api/entities/{productId}/relations/KeyIngredients
+// (confirmed working against your instance — not a Definition.Name query)
 // ─────────────────────────────────────────────
 async function getRelatedIngredients(productId, contentHubBaseUrl, token) {
   try {
     console.log(`🌿 Fetching related Key Ingredients for product ${productId}`);
-    console.log(`   Using definition: ${INGREDIENT_DEFINITION_NAME}, relation: ${INGREDIENT_RELATION_NAME}`);
-
-    // DIAGNOSTIC — remove once the correct relation name is confirmed and set in .env
-    const fullProductEntity = await getEntity(productId, contentHubBaseUrl, token);
-    await logAvailableRelations(fullProductEntity);
-    await logRelationsFromApi(productId, contentHubBaseUrl, token);
-
-    const query = `Definition.Name=='${INGREDIENT_DEFINITION_NAME}' AND Parent('${INGREDIENT_RELATION_NAME}').id==${productId}`;
+    console.log(`   Using relation endpoint: /entities/${productId}/relations/${INGREDIENT_RELATION_NAME}`);
 
     const response = await axios.get(
-      `${contentHubBaseUrl}/api/entities/query`,
+      `${contentHubBaseUrl}/api/entities/${productId}/relations/${INGREDIENT_RELATION_NAME}`,
       {
-        params: { query },
         headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' },
         timeout: 10000
       }
     );
 
-    const ingredientEntities = response.data?.items || [];
-    console.log(`   ✅ Query returned ${ingredientEntities.length} ingredients`);
+    // Content Hub's relations endpoint commonly returns either
+    // { totalItems, items: [...] } or a bare array — handle both.
+    const relationItems = response.data?.items || (Array.isArray(response.data) ? response.data : []);
+    console.log(`   ✅ Relation endpoint returned ${relationItems.length} item(s)`);
+    // Uncomment for one-off debugging of the raw shape returned by your instance:
+    // console.log('   Raw relation payload:', JSON.stringify(response.data));
 
     const ingredients = [];
-    for (let i = 0; i < ingredientEntities.length; i++) {
+    for (let i = 0; i < relationItems.length; i++) {
       try {
-        const ingredient = ingredientEntities[i];
-        const props = ingredient?.properties || {};
+        const item = relationItems[i];
 
+        // Some Content Hub versions inline full entity data on relation items,
+        // others return a lightweight stub with just id/href — handle both.
+        const hasInlineProps = item?.properties && Object.keys(item.properties).length > 0;
+        let ingredientEntity = item;
+
+        if (!hasInlineProps) {
+          const ingredientId = item?.id || extractIdFromHref(item?.href || item?.self);
+          if (!ingredientId) {
+            console.warn(`⚠️ Ingredient relation item #${i}: no id/href found, skipping`);
+            continue;
+          }
+          ingredientEntity = await getEntity(ingredientId, contentHubBaseUrl, token);
+        }
+
+        const props = ingredientEntity?.properties || {};
         const ingredientData = {
-          id: ingredient.id,
-          title: extractLocalizedText(props.Title || ingredient.identifier),
+          id: ingredientEntity.id,
+          title: extractLocalizedText(props.Title || ingredientEntity.identifier),
           description: extractLocalizedText(props.Description),
-          imageUrl: await resolveIngredientImageUrl(ingredient, contentHubBaseUrl, token)
+          imageUrl: await resolveIngredientImageUrl(ingredientEntity, contentHubBaseUrl, token)
         };
 
         if (ingredientData.title) {
           ingredients.push(ingredientData);
+        } else {
+          console.warn(`⚠️ Ingredient relation item #${i}: resolved entity has no Title, skipping`);
         }
       } catch (err) {
-        console.warn(`⚠️ Ingredient #${i}: Error processing`, err.message);
+        console.warn(`⚠️ Ingredient relation item #${i}: Error processing`, err.message);
       }
     }
 
     console.log(`✅ Retrieved ${ingredients.length} Key Ingredient(s)`);
     return ingredients;
   } catch (err) {
-    console.error('❌ Key Ingredients query error:', err.message);
+    console.error('❌ Key Ingredients relation fetch error:', err.response?.status, err.message);
     return [];
   }
 }
