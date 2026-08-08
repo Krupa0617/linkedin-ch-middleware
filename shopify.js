@@ -783,7 +783,6 @@ async function createOrUpdateIngredientMetaobject(ingredient) {
       { key: 'description', value: ingredient.description || '' }  // ⚠️ Verify this key exists
     ];
 
-    // ❌ OLD (WRONG):
      if (ingredient.imageUrl) {
        const fileGid = await uploadImageAsShopifyFile(ingredient.imageUrl, ingredient.title);
        if (fileGid) {
@@ -791,22 +790,6 @@ async function createOrUpdateIngredientMetaobject(ingredient) {
          console.log("Shopify IngredientImage :: ",fileGid);
        }
      }
-
-    // ✅ NEW (CORRECT):
-    // Replace 'ingredient_image' with the ACTUAL field key from your metaobject definition
-    if (ingredient.imageUrl) {
-      const fileGid = await uploadImageAsShopifyFile(ingredient.imageUrl, ingredient.title);
-      if (fileGid) {
-        // ⚠️ CHANGE THIS: Replace 'ingredient_image' with your actual field key
-        // Common variations:
-        //   - 'ingredient_image'
-        //   - 'image'
-        //   - 'ingredientImage'
-        //   - 'ingredient_picture'
-        // Check your metaobject definition to find the exact key!
-        fields.push({ key: 'ingredientimage', value: fileGid });
-      }
-    }
 
     let result;
     if (existingMetaobjectId) {
