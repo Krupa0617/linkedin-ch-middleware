@@ -21,10 +21,31 @@ const {
   SHOPIFY_CLIENT_ID,
   SHOPIFY_CLIENT_SECRET,
   SHOPIFY_API_VERSION,
-  DATA_DIR
+  DATA_DIR,
+
+  // ── NEW: Key Ingredients configuration ──────────────────────
+  // Verify these against your actual Content Hub schema
+  // (Admin > Configuration > Entity definitions) before running.
+  CH_INGREDIENT_DEFINITION_NAME,   // e.g. "M.KeyIngredients"
+  CH_INGREDIENT_RELATION_NAME,     // e.g. "PCMProductToKeyIngredients" (screenshot shows "KeyIngredients")
+  CH_INGREDIENT_IMAGE_RELATION_NAME, // relation from ingredient entity -> M.Asset for IngredientImage, if it's a link field rather than inline
+
+  // Shopify side
+  SHOPIFY_INGREDIENT_METAOBJECT_TYPE,      // metaobject type handle, e.g. "key_ingredients"
+  SHOPIFY_KEY_INGREDIENTS_METAFIELD_NAMESPACE, // e.g. "custom"
+  SHOPIFY_KEY_INGREDIENTS_METAFIELD_KEY         // e.g. "key_ingredients" (must match the definition's key exactly)
 } = process.env;
 
 const SHOPIFY_VERSION = SHOPIFY_API_VERSION || '2026-07';
+
+// Defaults — override in .env once you've confirmed the real names in Content Hub / Shopify
+const INGREDIENT_DEFINITION_NAME = CH_INGREDIENT_DEFINITION_NAME || 'M.KeyIngredients';
+const INGREDIENT_RELATION_NAME = CH_INGREDIENT_RELATION_NAME || 'PCMProductToKeyIngredients';
+const INGREDIENT_IMAGE_RELATION_NAME = CH_INGREDIENT_IMAGE_RELATION_NAME || 'KeyIngredientsToImageAsset';
+
+const INGREDIENT_METAOBJECT_TYPE = SHOPIFY_INGREDIENT_METAOBJECT_TYPE || 'key_ingredients';
+const KEY_INGREDIENTS_METAFIELD_NAMESPACE = SHOPIFY_KEY_INGREDIENTS_METAFIELD_NAMESPACE || 'custom';
+const KEY_INGREDIENTS_METAFIELD_KEY = SHOPIFY_KEY_INGREDIENTS_METAFIELD_KEY || 'key_ingredients';
 
 // ─────────────────────────────────────────────
 // FIX: Persistent Content Hub entity → Shopify product mapping
@@ -259,7 +280,7 @@ function extractDefinitionName(entity) {
 }
 
 // ─────────────────────────────────────────────
-// Helper: Get image URL + title from an Asset
+// Helper: Get image URL + title from an Asset entity
 // ─────────────────────────────────────────────
 function extractAssetImage(entity) {
   const props = entity?.properties || {};
@@ -462,14 +483,15 @@ async function getRelatedAssets(productId, contentHubBaseUrl, token) {
 }
 
 // ─────────────────────────────────────────────
-// NEW: Fetch related ingredients from Content Hub
+// UPDATED: Fetch related Key Ingredients from Content Hub
+// Matches the "Add Key Ingredients" entry form: Title, Description, IngredientImage
 // ─────────────────────────────────────────────
 async function getRelatedIngredients(productId, contentHubBaseUrl, token) {
   try {
-    console.log(`🌿 Fetching related ingredients for product ${productId}`);
+    console.log(`🌿 Fetching related Key Ingredients for product ${productId}`);
+    console.log(`   Using definition: ${INGREDIENT_DEFINITION_NAME}, relation: ${INGREDIENT_RELATION_NAME}`);
 
-    // Query for ingredients related to this product
-    const query = `Definition.Name=='M.Ingredient' AND Parent('PCMProductToIngredient').id==${productId}`;
+    const query = `Definition.Name=='${INGREDIENT_DEFINITION_NAME}' AND Parent('${INGREDIENT_RELATION_NAME}').id==${productId}`;
 
     const response = await axios.get(
       `${contentHubBaseUrl}/api/entities/query`,
@@ -491,37 +513,70 @@ async function getRelatedIngredients(productId, contentHubBaseUrl, token) {
 
         const ingredientData = {
           id: ingredient.id,
-          title: extractLocalizedText(props.Title || props.Name || ingredient.identifier),
-          description: extractLocalizedText(props.Description || props.LongDescription),
-          imageUrl: null
+          title: extractLocalizedText(props.Title || ingredient.identifier),
+          description: extractLocalizedText(props.Description),
+          imageUrl: await resolveIngredientImageUrl(ingredient, contentHubBaseUrl, token)
         };
-
-        // Extract image URL if available
-        const renditions = ingredient?.renditions;
-        if (renditions && typeof renditions === 'object') {
-          ingredientData.imageUrl = renditions.downloadOriginal?.[0]?.href
-            || renditions.downloadOriginal?.[0]?.url
-            || null;
-        }
 
         if (ingredientData.title) {
           ingredients.push(ingredientData);
         }
       } catch (err) {
-        console.warn(`⚠️ Ingredient #${i}: Error processing`);
+        console.warn(`⚠️ Ingredient #${i}: Error processing`, err.message);
       }
     }
 
-    console.log(`✅ Retrieved ${ingredients.length} ingredient(s)`);
+    console.log(`✅ Retrieved ${ingredients.length} Key Ingredient(s)`);
     return ingredients;
   } catch (err) {
-    console.error('❌ Ingredient query error:', err.message);
+    console.error('❌ Key Ingredients query error:', err.message);
     return [];
   }
 }
 
 // ─────────────────────────────────────────────
-// NEW: Create/Update Metaobject for Ingredient in Shopify
+// NEW: Resolve the IngredientImage field to an actual image URL.
+// The "Add Key Ingredients" form has an "IngredientImage" field with a
+// "Select image" button — that's an asset reference, not inline renditions,
+// so we check both an inline rendition on the ingredient entity itself
+// (in case it's stored directly) and a linked M.Asset entity as fallback.
+// ─────────────────────────────────────────────
+async function resolveIngredientImageUrl(ingredientEntity, contentHubBaseUrl, token) {
+  // Case 1: renditions exist directly on the ingredient entity
+  const directRenditions = ingredientEntity?.renditions;
+  if (directRenditions && typeof directRenditions === 'object') {
+    const directUrl = directRenditions.downloadOriginal?.[0]?.href
+      || directRenditions.downloadOriginal?.[0]?.url;
+    if (directUrl) return directUrl;
+  }
+
+  // Case 2: IngredientImage is a linked M.Asset entity via a relation
+  try {
+    const query = `Definition.Name=='M.Asset' AND Parent('${INGREDIENT_IMAGE_RELATION_NAME}').id==${ingredientEntity.id}`;
+    const response = await axios.get(
+      `${contentHubBaseUrl}/api/entities/query`,
+      {
+        params: { query },
+        headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' },
+        timeout: 10000
+      }
+    );
+    const assetEntity = response.data?.items?.[0];
+    if (assetEntity) {
+      const { imageUrl } = extractAssetImage(assetEntity);
+      return imageUrl;
+    }
+  } catch (err) {
+    console.warn(`⚠️  Could not resolve IngredientImage for ingredient ${ingredientEntity.id}:`, err.message);
+  }
+
+  return null;
+}
+
+// ─────────────────────────────────────────────
+// Create/Update Metaobject for a Key Ingredient in Shopify
+// Field keys (title, description, ingredient_image) must match the
+// metaobject definition's field keys under Settings > Custom data > Metaobjects.
 // ─────────────────────────────────────────────
 const CREATE_METAOBJECT_MUTATION = `
   mutation createMetaobject($metaobject: MetaobjectInput!) {
@@ -553,47 +608,55 @@ const UPDATE_METAOBJECT_MUTATION = `
   }
 `;
 
-async function createOrUpdateIngredientMetaobject(ingredient, existingMetaobjectId = null) {
+// Look up an existing metaobject for this Content Hub ingredient by handle prefix
+const FIND_METAOBJECT_BY_HANDLE_QUERY = `
+  query findMetaobjectByHandle($type: String!, $handle: String!) {
+    metaobjectByHandle(handle: { type: $type, handle: $handle }) {
+      id
+      handle
+    }
+  }
+`;
+
+async function findExistingIngredientMetaobject(ingredientId) {
   try {
-    console.log(`\n📝 Creating/Updating ingredient metaobject: ${ingredient.title}`);
+    const handle = `ingredient-${ingredientId}`;
+    const data = await shopifyGraphQL(FIND_METAOBJECT_BY_HANDLE_QUERY, {
+      type: INGREDIENT_METAOBJECT_TYPE,
+      handle
+    });
+    return data?.metaobjectByHandle?.id || null;
+  } catch (err) {
+    // Not found or handle mismatch — treat as new
+    return null;
+  }
+}
+
+async function createOrUpdateIngredientMetaobject(ingredient) {
+  try {
+    console.log(`\n📝 Creating/Updating Key Ingredient metaobject: ${ingredient.title}`);
+
+    const existingMetaobjectId = await findExistingIngredientMetaobject(ingredient.id);
 
     const fields = [
-      {
-        key: 'title',
-        value: ingredient.title
-      },
-      {
-        key: 'description',
-        value: ingredient.description || ''
-      }
+      { key: 'title', value: ingredient.title },
+      { key: 'description', value: ingredient.description || '' }
     ];
 
-    // Add image if available
     if (ingredient.imageUrl) {
-      fields.push({
-        key: 'ingredient_image',
-        value: ingredient.imageUrl
-      });
+      fields.push({ key: 'ingredient_image', value: ingredient.imageUrl });
     }
 
     const metaobjectInput = {
-      type: 'key_ingredients',
-      fields: fields,
+      type: INGREDIENT_METAOBJECT_TYPE,
+      fields,
       capabilities: {
-        publishable: {
-          status: 'ACTIVE'
-        }
+        publishable: { status: 'ACTIVE' }
       }
     };
 
-    // If it's a new ingredient, we need a handle
-    if (!existingMetaobjectId) {
-      metaobjectInput.handle = `ingredient-${ingredient.id}-${Date.now()}`;
-    }
-
     let result;
     if (existingMetaobjectId) {
-      // Update existing
       console.log(`♻️ Updating metaobject: ${existingMetaobjectId}`);
       const data = await shopifyGraphQL(UPDATE_METAOBJECT_MUTATION, {
         id: existingMetaobjectId,
@@ -604,9 +667,11 @@ async function createOrUpdateIngredientMetaobject(ingredient, existingMetaobject
         throw new Error(JSON.stringify(data.metaobjectUpdate.userErrors));
       }
       result = data.metaobjectUpdate.metaobject;
-      console.log(`✅ Ingredient metaobject UPDATED: ${ingredient.title}`);
+      console.log(`✅ Key Ingredient metaobject UPDATED: ${ingredient.title}`);
     } else {
-      // Create new
+      // Stable, deterministic handle so re-syncs update instead of duplicating
+      metaobjectInput.handle = `ingredient-${ingredient.id}`;
+
       console.log(`✨ Creating new metaobject for: ${ingredient.title}`);
       const data = await shopifyGraphQL(CREATE_METAOBJECT_MUTATION, {
         metaobject: metaobjectInput
@@ -616,14 +681,35 @@ async function createOrUpdateIngredientMetaobject(ingredient, existingMetaobject
         throw new Error(JSON.stringify(data.metaobjectCreate.userErrors));
       }
       result = data.metaobjectCreate.metaobject;
-      console.log(`✅ Ingredient metaobject CREATED: ${ingredient.title}`);
+      console.log(`✅ Key Ingredient metaobject CREATED: ${ingredient.title}`);
     }
 
     return result;
   } catch (err) {
-    console.error(`❌ Failed to create/update ingredient metaobject:`, err.message);
+    console.error(`❌ Failed to create/update Key Ingredient metaobject:`, err.message);
     return null;
   }
+}
+
+// ─────────────────────────────────────────────
+// NEW: Link the created ingredient metaobjects to the product's
+// "Key Ingredients" metafield (list.metaobject_reference).
+// This is the piece that was missing — metaobjects were being created
+// but never attached to the product, so the field stayed empty.
+// ─────────────────────────────────────────────
+async function setKeyIngredientsMetafield(productGid, metaobjectIds) {
+  if (!productGid || !metaobjectIds?.length) {
+    console.warn('⚠️  Skipping Key Ingredients metafield — no metaobjects to link');
+    return false;
+  }
+
+  return setProductMetafields(
+    productGid,
+    KEY_INGREDIENTS_METAFIELD_NAMESPACE,
+    KEY_INGREDIENTS_METAFIELD_KEY,
+    JSON.stringify(metaobjectIds),
+    'list.metaobject_reference'
+  );
 }
 
 // ─────────────────────────────────────────────
@@ -813,7 +899,7 @@ const PRODUCT_CREATE_MEDIA_MUTATION = `
 `;
 
 // ─────────────────────────────────────────────
-// Handle product creation/update WITH INGREDIENTS
+// Handle product creation/update WITH KEY INGREDIENTS
 // ─────────────────────────────────────────────
 async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   const productEntity = await getEntity(productId, contentHubBaseUrl, chToken);
@@ -843,8 +929,8 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
 
   const existingProduct = await findExistingShopifyProduct(mapKey, sku);
   const relatedAssets = await getRelatedAssets(productId, contentHubBaseUrl, chToken);
-  
-  // NEW: Fetch related ingredients
+
+  // Fetch related Key Ingredients
   const relatedIngredients = await getRelatedIngredients(productId, contentHubBaseUrl, chToken);
 
   // Extract description
@@ -987,17 +1073,26 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       console.warn('⚠️  Could not set additional metafields:', metafieldErr.message);
     }
 
-    // NEW: Create/Update ingredient metaobjects
+    // Create/Update Key Ingredient metaobjects, then link them to the product
     const createdIngredientIds = [];
     if (relatedIngredients.length > 0) {
-      console.log(`\n🌿 Processing ${relatedIngredients.length} ingredient(s)...`);
+      console.log(`\n🌿 Processing ${relatedIngredients.length} Key Ingredient(s)...`);
       for (const ingredient of relatedIngredients) {
         const metaobject = await createOrUpdateIngredientMetaobject(ingredient);
         if (metaobject?.id) {
           createdIngredientIds.push(metaobject.id);
         }
       }
-      console.log(`✅ Created/Updated ${createdIngredientIds.length} ingredient metaobject(s)`);
+      console.log(`✅ Created/Updated ${createdIngredientIds.length} Key Ingredient metaobject(s)`);
+
+      // NEW: link metaobjects back to the product's Key Ingredients metafield
+      try {
+        await setKeyIngredientsMetafield(shopifyProduct.id, createdIngredientIds);
+      } catch (linkErr) {
+        console.warn('⚠️  Could not link Key Ingredients metafield:', linkErr.message);
+      }
+    } else {
+      console.log('ℹ️  No Key Ingredients found for this product — skipping metafield link');
     }
 
     // Write sync status back to Content Hub
@@ -1025,6 +1120,7 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       sku,
       imagesAttached: isNewProduct ? relatedAssets.length : 0,
       ingredientsAttached: createdIngredientIds.length,
+      keyIngredientMetaobjectIds: createdIngredientIds,
       isUpdate: !!existingProduct,
       productType: productTypeField || null,
       countryOfOrigin: toCountryCode(countryOfOriginRaw) || null,
