@@ -787,7 +787,7 @@ async function createOrUpdateIngredientMetaobject(ingredient) {
      if (ingredient.imageUrl) {
        const fileGid = await uploadImageAsShopifyFile(ingredient.imageUrl, ingredient.title);
        if (fileGid) {
-         fields.push({ key: 'IngredientImage', value: fileGid });  // This field doesn't exist!
+         fields.push({ key: 'ingredientimage', value: fileGid });  // This field doesn't exist!
          console.log("Shopify IngredientImage :: ",fileGid);
        }
      }
