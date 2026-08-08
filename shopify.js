@@ -483,6 +483,36 @@ async function getRelatedAssets(productId, contentHubBaseUrl, token) {
 }
 
 // ─────────────────────────────────────────────
+// DIAGNOSTIC: List every relation name Content Hub exposes on an entity.
+// Run once against a product that has ingredients attached (e.g. Galactosure,
+// entity 36294) to find the exact relation name to put in .env — the console
+// output will show something like: 📎 Available relations: ["ProductToAsset",
+// "ProductToDocument", "ActualRelationNameHere", ...]
+// ─────────────────────────────────────────────
+async function logAvailableRelations(entity) {
+  try {
+    const relationKeys = entity?.relations ? Object.keys(entity.relations) : [];
+    console.log(`📎 Available relations on entity ${entity?.id}:`, JSON.stringify(relationKeys));
+
+    // Also try the dedicated relations endpoint as a fallback / cross-check
+  } catch (err) {
+    console.warn('⚠️  Could not enumerate relations:', err.message);
+  }
+}
+
+async function logRelationsFromApi(entityId, contentHubBaseUrl, token) {
+  try {
+    const response = await axios.get(
+      `${contentHubBaseUrl}/api/entities/${entityId}/relations`,
+      { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' }, timeout: 10000 }
+    );
+    console.log(`📎 /relations endpoint for entity ${entityId}:`, JSON.stringify(response.data));
+  } catch (err) {
+    console.warn(`⚠️  /relations endpoint not available or failed:`, err.response?.status, err.message);
+  }
+}
+
+// ─────────────────────────────────────────────
 // UPDATED: Fetch related Key Ingredients from Content Hub
 // Matches the "Add Key Ingredients" entry form: Title, Description, IngredientImage
 // ─────────────────────────────────────────────
@@ -490,6 +520,11 @@ async function getRelatedIngredients(productId, contentHubBaseUrl, token) {
   try {
     console.log(`🌿 Fetching related Key Ingredients for product ${productId}`);
     console.log(`   Using definition: ${INGREDIENT_DEFINITION_NAME}, relation: ${INGREDIENT_RELATION_NAME}`);
+
+    // DIAGNOSTIC — remove once the correct relation name is confirmed and set in .env
+    const fullProductEntity = await getEntity(productId, contentHubBaseUrl, token);
+    await logAvailableRelations(fullProductEntity);
+    await logRelationsFromApi(productId, contentHubBaseUrl, token);
 
     const query = `Definition.Name=='${INGREDIENT_DEFINITION_NAME}' AND Parent('${INGREDIENT_RELATION_NAME}').id==${productId}`;
 
