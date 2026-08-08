@@ -51,7 +51,6 @@ function saveEntityProductMap(map) {
         fs.mkdirSync(DATA_DIRECTORY, { recursive: true });
       } catch (mkdirErr) {
         console.warn('⚠️  Could not create data directory, mapping will not persist:', mkdirErr.message);
-        // Don't fail, just continue without persistence
         return;
       }
     }
@@ -316,14 +315,13 @@ function toCountryCode(rawValue) {
   const value = extractLocalizedText(rawValue).trim();
   if (!value) return null;
 
-  // Already a 2-letter ISO code
   if (/^[a-zA-Z]{2}$/.test(value)) {
     return value.toUpperCase();
   }
 
   const mapped = COUNTRY_NAME_TO_ISO[value.toLowerCase()];
   if (!mapped) {
-    console.warn(`⚠️  Could not map country "${value}" to an ISO code — skipping country of origin. Add it to COUNTRY_NAME_TO_ISO.`);
+    console.warn(`⚠️  Could not map country "${value}" to an ISO code`);
     return null;
   }
   return mapped;
@@ -346,7 +344,7 @@ async function getShopifyProductById(productGid) {
     const data = await shopifyGraphQL(PRODUCT_BY_ID_QUERY, { id: productGid });
     return data?.product || null;
   } catch (err) {
-    console.warn('⚠️  Direct product lookup failed:', err.response?.data ? JSON.stringify(err.response.data) : err.message);
+    console.warn('⚠️  Direct product lookup failed:', err.message);
     return null;
   }
 }
@@ -392,7 +390,7 @@ async function findShopifyProductBySku(sku) {
     console.log(`✅ Found existing product via SKU search: ${productRestId} (${edge.node.product.title})`);
     return { id: productRestId, gid: productGid, title: edge.node.product.title };
   } catch (err) {
-    console.warn('⚠️ SKU search failed:', err.response?.data ? JSON.stringify(err.response.data) : err.message);
+    console.warn('⚠️ SKU search failed:', err.message);
     return null;
   }
 }
@@ -404,16 +402,16 @@ async function findExistingShopifyProduct(mapKey, sku) {
   const mappedGid = getMappedProductGid(mapKey);
 
   if (mappedGid) {
-    console.log(`🗺️  Found local mapping for "${mapKey}" -> ${mappedGid}, verifying it still exists...`);
+    console.log(`🗺️  Found local mapping for "${mapKey}"`);
     const product = await getShopifyProductById(mappedGid);
 
     if (product) {
       const productRestId = product.id.split('/').pop();
-      console.log(`✅ Confirmed existing product: ${productRestId} (${product.title})`);
+      console.log(`✅ Confirmed existing product: ${productRestId}`);
       return { id: productRestId, gid: product.id, title: product.title };
     }
 
-    console.warn(`⚠️  Mapped product ${mappedGid} no longer exists in Shopify (deleted?) — clearing stale mapping`);
+    console.warn(`⚠️  Mapped product no longer exists — clearing stale mapping`);
     clearMappedProductGid(mapKey);
   }
 
@@ -451,7 +449,7 @@ async function getRelatedAssets(productId, contentHubBaseUrl, token) {
           imageAssets.push({ id: asset.id, title, imageUrl });
         }
       } catch (err) {
-        console.warn(`⚠️ Asset #${i}: Error processing -`, err.message.slice(0, 80));
+        console.warn(`⚠️ Asset #${i}: Error processing`);
       }
     }
 
@@ -464,8 +462,172 @@ async function getRelatedAssets(productId, contentHubBaseUrl, token) {
 }
 
 // ─────────────────────────────────────────────
+// NEW: Fetch related ingredients from Content Hub
+// ─────────────────────────────────────────────
+async function getRelatedIngredients(productId, contentHubBaseUrl, token) {
+  try {
+    console.log(`🌿 Fetching related ingredients for product ${productId}`);
+
+    // Query for ingredients related to this product
+    const query = `Definition.Name=='M.Ingredient' AND Parent('PCMProductToIngredient').id==${productId}`;
+
+    const response = await axios.get(
+      `${contentHubBaseUrl}/api/entities/query`,
+      {
+        params: { query },
+        headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' },
+        timeout: 10000
+      }
+    );
+
+    const ingredientEntities = response.data?.items || [];
+    console.log(`   ✅ Query returned ${ingredientEntities.length} ingredients`);
+
+    const ingredients = [];
+    for (let i = 0; i < ingredientEntities.length; i++) {
+      try {
+        const ingredient = ingredientEntities[i];
+        const props = ingredient?.properties || {};
+
+        const ingredientData = {
+          id: ingredient.id,
+          title: extractLocalizedText(props.Title || props.Name || ingredient.identifier),
+          description: extractLocalizedText(props.Description || props.LongDescription),
+          imageUrl: null
+        };
+
+        // Extract image URL if available
+        const renditions = ingredient?.renditions;
+        if (renditions && typeof renditions === 'object') {
+          ingredientData.imageUrl = renditions.downloadOriginal?.[0]?.href
+            || renditions.downloadOriginal?.[0]?.url
+            || null;
+        }
+
+        if (ingredientData.title) {
+          ingredients.push(ingredientData);
+        }
+      } catch (err) {
+        console.warn(`⚠️ Ingredient #${i}: Error processing`);
+      }
+    }
+
+    console.log(`✅ Retrieved ${ingredients.length} ingredient(s)`);
+    return ingredients;
+  } catch (err) {
+    console.error('❌ Ingredient query error:', err.message);
+    return [];
+  }
+}
+
+// ─────────────────────────────────────────────
+// NEW: Create/Update Metaobject for Ingredient in Shopify
+// ─────────────────────────────────────────────
+const CREATE_METAOBJECT_MUTATION = `
+  mutation createMetaobject($metaobject: MetaobjectInput!) {
+    metaobjectCreate(metaobject: $metaobject) {
+      metaobject {
+        id
+        handle
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+const UPDATE_METAOBJECT_MUTATION = `
+  mutation updateMetaobject($id: ID!, $metaobject: MetaobjectInput!) {
+    metaobjectUpdate(id: $id, metaobject: $metaobject) {
+      metaobject {
+        id
+        handle
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+async function createOrUpdateIngredientMetaobject(ingredient, existingMetaobjectId = null) {
+  try {
+    console.log(`\n📝 Creating/Updating ingredient metaobject: ${ingredient.title}`);
+
+    const fields = [
+      {
+        key: 'title',
+        value: ingredient.title
+      },
+      {
+        key: 'description',
+        value: ingredient.description || ''
+      }
+    ];
+
+    // Add image if available
+    if (ingredient.imageUrl) {
+      fields.push({
+        key: 'ingredient_image',
+        value: ingredient.imageUrl
+      });
+    }
+
+    const metaobjectInput = {
+      type: 'key_ingredients',
+      fields: fields,
+      capabilities: {
+        publishable: {
+          status: 'ACTIVE'
+        }
+      }
+    };
+
+    // If it's a new ingredient, we need a handle
+    if (!existingMetaobjectId) {
+      metaobjectInput.handle = `ingredient-${ingredient.id}-${Date.now()}`;
+    }
+
+    let result;
+    if (existingMetaobjectId) {
+      // Update existing
+      console.log(`♻️ Updating metaobject: ${existingMetaobjectId}`);
+      const data = await shopifyGraphQL(UPDATE_METAOBJECT_MUTATION, {
+        id: existingMetaobjectId,
+        metaobject: metaobjectInput
+      });
+
+      if (data.metaobjectUpdate?.userErrors?.length) {
+        throw new Error(JSON.stringify(data.metaobjectUpdate.userErrors));
+      }
+      result = data.metaobjectUpdate.metaobject;
+      console.log(`✅ Ingredient metaobject UPDATED: ${ingredient.title}`);
+    } else {
+      // Create new
+      console.log(`✨ Creating new metaobject for: ${ingredient.title}`);
+      const data = await shopifyGraphQL(CREATE_METAOBJECT_MUTATION, {
+        metaobject: metaobjectInput
+      });
+
+      if (data.metaobjectCreate?.userErrors?.length) {
+        throw new Error(JSON.stringify(data.metaobjectCreate.userErrors));
+      }
+      result = data.metaobjectCreate.metaobject;
+      console.log(`✅ Ingredient metaobject CREATED: ${ingredient.title}`);
+    }
+
+    return result;
+  } catch (err) {
+    console.error(`❌ Failed to create/update ingredient metaobject:`, err.message);
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────
 // Set Shopify Product Metafield
-// FIX: Don't send type on UPDATE (type is locked to definition)
 // ─────────────────────────────────────────────
 async function setProductMetafields(
   productGid,
@@ -498,9 +660,7 @@ async function setProductMetafields(
       return false;
     }
 
-    // ─────────────────────────────────────────
-    // 1. Check if metafield already exists
-    // ─────────────────────────────────────────
+    // Check if metafield already exists
     const existingResponse = await shopifyREST(
       'GET',
       `/products/${productId}/metafields.json?namespace=${encodeURIComponent(
@@ -512,15 +672,12 @@ async function setProductMetafields(
       (m) => m.namespace === namespace && m.key === key
     );
 
-    // ─────────────────────────────────────────
-    // 2. Update existing metafield
-    // ─────────────────────────────────────────
+    // Update existing metafield
     if (existingMetafield) {
       console.log(`♻️ Existing metafield found: ${namespace}.${key}`);
       console.log(`   Metafield ID: ${existingMetafield.id}`);
       console.log(`   Existing type: ${existingMetafield.type}`);
 
-      // FIX: Do NOT send type on update - it's locked to the definition
       const updateResponse = await shopifyREST(
         'PUT',
         `/products/${productId}/metafields/${existingMetafield.id}.json`,
@@ -528,23 +685,20 @@ async function setProductMetafields(
           metafield: {
             id: existingMetafield.id,
             value: String(value)
-            // ⚠️ Type is NOT included - it cannot be changed on update!
           }
         }
       );
 
       if (updateResponse?.metafield?.id) {
-        console.log(`✅ Metafield UPDATED: ${namespace}.${key} = ${value}`);
+        console.log(`✅ Metafield UPDATED: ${namespace}.${key}`);
         return true;
       }
 
-      console.warn(`⚠️ Unexpected update response:`, JSON.stringify(updateResponse));
+      console.warn(`⚠️ Unexpected update response`);
       return false;
     }
 
-    // ─────────────────────────────────────────
-    // 3. Create metafield if it doesn't exist
-    // ─────────────────────────────────────────
+    // Create new metafield
     console.log(`✨ Metafield does not exist. Creating ${namespace}.${key}`);
 
     const createResponse = await shopifyREST(
@@ -555,26 +709,20 @@ async function setProductMetafields(
           namespace,
           key,
           value: String(value),
-          type // Type is included on CREATE
+          type
         }
       }
     );
 
     if (createResponse?.metafield?.id) {
-      console.log(`✅ Metafield CREATED: ${namespace}.${key} = ${value}`);
-      console.log(`   Shopify metafield ID: ${createResponse.metafield.id}`);
+      console.log(`✅ Metafield CREATED: ${namespace}.${key}`);
       return true;
     }
 
-    console.warn(`⚠️ Unexpected create response:`, JSON.stringify(createResponse));
+    console.warn(`⚠️ Unexpected create response`);
     return false;
   } catch (err) {
-    console.error(`❌ Metafield update failed for ${namespace}.${key}:`, err.message);
-
-    if (err.response?.data) {
-      console.error(`   Shopify error:`, JSON.stringify(err.response.data, null, 2));
-    }
-
+    console.error(`❌ Metafield update failed:`, err.message);
     return false;
   }
 }
@@ -599,7 +747,7 @@ async function setInventoryItemCountryOfOrigin(variantId, countryCode) {
     console.log(`✅ Country/Region of origin set: ${countryCode}`);
     return true;
   } catch (err) {
-    console.error('❌ Failed to set country of origin:', err.response?.data ? JSON.stringify(err.response.data) : err.message);
+    console.error('❌ Failed to set country of origin:', err.message);
     return false;
   }
 }
@@ -665,7 +813,7 @@ const PRODUCT_CREATE_MEDIA_MUTATION = `
 `;
 
 // ─────────────────────────────────────────────
-// Handle product creation/update
+// Handle product creation/update WITH INGREDIENTS
 // ─────────────────────────────────────────────
 async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   const productEntity = await getEntity(productId, contentHubBaseUrl, chToken);
@@ -683,25 +831,21 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
   const contact = extractLocalizedText(props.Contact);
 
   console.log(`\n🔎 CONTENT HUB FIELD VALUES`);
-  console.log(`   ProductType    RAW:`, JSON.stringify(props.ProductType));
   console.log(`   ProductType    VAL: "${productTypeField}"`);
-  console.log(`   Manufacturedby RAW:`, JSON.stringify(props.Manufacturedby));
   console.log(`   Manufacturedby VAL: "${manufacturedBy}"`);
-  console.log(`   Contact        RAW:`, JSON.stringify(props.Contact));
   console.log(`   Contact        VAL: "${contact}"`);
 
   console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
   console.log(`🎯 Product: ${title}`);
   console.log(`📌 SKU: "${sku}"`);
   console.log(`📌 Entity ID: ${productId}`);
-  console.log(`📌 ProductType: "${productTypeField}"`);
-  console.log(`📌 CountryOfOrigin: "${extractLocalizedText(countryOfOriginRaw)}"`);
-  console.log(`📌 Manufacturedby: "${manufacturedBy}"`);
-  console.log(`📌 Contact: "${contact}"`);
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
 
   const existingProduct = await findExistingShopifyProduct(mapKey, sku);
   const relatedAssets = await getRelatedAssets(productId, contentHubBaseUrl, chToken);
+  
+  // NEW: Fetch related ingredients
+  const relatedIngredients = await getRelatedIngredients(productId, contentHubBaseUrl, chToken);
 
   // Extract description
   let description = '';
@@ -734,7 +878,7 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
         throw new Error(JSON.stringify(data.productUpdate.userErrors));
       }
       shopifyProduct = data.productUpdate.product;
-      console.log(`✅ Product updated (description and details synced)`);
+      console.log(`✅ Product updated`);
     } else {
       console.log(`✨ CREATE mode - No existing product found`);
       const data = await shopifyGraphQL(PRODUCT_CREATE_MUTATION, { input });
@@ -788,10 +932,10 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
         console.warn('⚠️  Image attachment failed:', mediaErr.message);
       }
     } else if (!isNewProduct && relatedAssets.length > 0) {
-      console.log(`ℹ️  Skipping image attachment on update (prevents duplicate images)`);
+      console.log(`ℹ️  Skipping image attachment on update`);
     }
 
-    // Set Content Hub Product ID metafield
+    // Set metafields
     try {
       await setProductMetafields(
         shopifyProduct.id,
@@ -805,11 +949,9 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
     }
 
     // Set ProductType / Manufacturedby / Contact metafields
-    // Determine type based on content length for CREATE operations
     try {
       if (productTypeField) {
         const trimmedType = productTypeField.trim();
-        // For single line fields, use single_line_text_field (max 255 chars)
         await setProductMetafields(
           shopifyProduct.id,
           'custom',
@@ -821,7 +963,6 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
 
       if (manufacturedBy) {
         const trimmedMfg = manufacturedBy.trim();
-        // Choose type based on length for CREATE, but on UPDATE it won't change
         const typeForMfg = trimmedMfg.length > 255 ? 'multi_line_text_field' : 'single_line_text_field';
         await setProductMetafields(
           shopifyProduct.id,
@@ -834,7 +975,6 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
 
       if (contact) {
         const trimmedContact = contact.trim();
-        // Contact is always long, use multi_line_text_field
         await setProductMetafields(
           shopifyProduct.id,
           'custom',
@@ -845,6 +985,19 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       }
     } catch (metafieldErr) {
       console.warn('⚠️  Could not set additional metafields:', metafieldErr.message);
+    }
+
+    // NEW: Create/Update ingredient metaobjects
+    const createdIngredientIds = [];
+    if (relatedIngredients.length > 0) {
+      console.log(`\n🌿 Processing ${relatedIngredients.length} ingredient(s)...`);
+      for (const ingredient of relatedIngredients) {
+        const metaobject = await createOrUpdateIngredientMetaobject(ingredient);
+        if (metaobject?.id) {
+          createdIngredientIds.push(metaobject.id);
+        }
+      }
+      console.log(`✅ Created/Updated ${createdIngredientIds.length} ingredient metaobject(s)`);
     }
 
     // Write sync status back to Content Hub
@@ -871,8 +1024,8 @@ async function handleProductPush(productId, contentHubBaseUrl, chToken) {
       title: shopifyProduct.title,
       sku,
       imagesAttached: isNewProduct ? relatedAssets.length : 0,
+      ingredientsAttached: createdIngredientIds.length,
       isUpdate: !!existingProduct,
-      descriptionUpdated: true,
       productType: productTypeField || null,
       countryOfOrigin: toCountryCode(countryOfOriginRaw) || null,
       manufacturedBy: manufacturedBy || null,
@@ -897,7 +1050,6 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
   console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
   console.log(`🖼️  Asset: ${title}`);
   console.log(`📌 SKU: "${sku}"`);
-  console.log(`📌 Asset ID: ${assetId}`);
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
 
   if (!imageUrl) {
@@ -932,7 +1084,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
         throw new Error(JSON.stringify(data.productUpdate.userErrors));
       }
       shopifyProduct = data.productUpdate.product;
-      console.log(`✅ Product updated (description synced)`);
+      console.log(`✅ Product updated`);
     } else {
       console.log(`✨ CREATE mode - No existing product found`);
       const data = await shopifyGraphQL(PRODUCT_CREATE_MUTATION, { input });
@@ -984,7 +1136,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
         console.warn('⚠️  Image attachment failed:', mediaErr.message);
       }
     } else if (!isNewProduct && imageUrl) {
-      console.log(`Skipping image attachment on update (prevents duplicate images)`);
+      console.log(`ℹ️  Skipping image attachment on update`);
     }
 
     // Set Content Hub Asset ID metafield
@@ -1024,8 +1176,7 @@ async function handleAssetPush(assetId, contentHubBaseUrl, chToken) {
       title: shopifyProduct.title,
       sku,
       imagesAttached: isNewProduct ? 1 : 0,
-      isUpdate: !!existingProduct,
-      descriptionUpdated: true
+      isUpdate: !!existingProduct
     };
   } catch (err) {
     console.error('❌ Asset sync failed:', err.message);
@@ -1057,10 +1208,10 @@ app.post('/shopify/publish', async (req, res) => {
   }
 
   if (isWebhookProcessing(entityId)) {
-    console.warn(`⚠️  Duplicate webhook ignored - already processing`);
+    console.warn(`⚠️  Duplicate webhook ignored`);
     return res.status(202).json({
       error: 'Webhook already processing',
-      message: 'Duplicate webhook call ignored to prevent duplicate products'
+      message: 'Duplicate webhook call ignored'
     });
   }
 
