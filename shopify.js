@@ -20,10 +20,11 @@ const {
   SHOPIFY_STORE_DOMAIN,
   SHOPIFY_CLIENT_ID,
   SHOPIFY_CLIENT_SECRET,
+  SHOPIFY_API_VERSION,
   DATA_DIR
 } = process.env;
 
-const SHOPIFY_VERSION ='2026-07';
+const SHOPIFY_VERSION = SHOPIFY_API_VERSION || '2026-07';
 
 // Key Ingredients configuration — hardcoded (no .env entries needed).
 // Confirmed from your Content Hub instance: the relation is "KeyIngredients",
@@ -32,9 +33,8 @@ const INGREDIENT_RELATION_NAME = 'KeyIngredients';
 // Confirmed from schema: "KeyIngredients is Parent of M.Asset" via the "IngredientImage" relation
 const INGREDIENT_IMAGE_RELATION_NAME = 'IngredientImage';
 
-// Metaobject type handle for Key Ingredients is resolved dynamically at
-// runtime (see resolveIngredientMetaobjectType) since it may be app-namespaced
-// rather than the plain "key_ingredients" string.
+// Confirmed from Settings > Custom data > Metaobjects > Key Ingredients: Type = "key_ingredients"
+const INGREDIENT_METAOBJECT_TYPE = 'key_ingredients';
 const KEY_INGREDIENTS_METAFIELD_NAMESPACE = 'custom';
 const KEY_INGREDIENTS_METAFIELD_KEY = 'key_ingredients';
 
@@ -590,6 +590,81 @@ async function resolveIngredientImageUrl(ingredientEntity, contentHubBaseUrl, to
 }
 
 // ─────────────────────────────────────────────
+// Upload an external image URL into Shopify Files, returning the resulting
+// file GID. Needed because "IngredientImage" is an Image (File) field type
+// on the metaobject — it expects a Shopify file reference, not a raw URL.
+// Shopify fetches the image asynchronously, so the file may briefly be in
+// "UPLOADED"/processing status; we poll a couple of times for it to become
+// ready before giving up and using whatever id we have.
+// ─────────────────────────────────────────────
+const FILE_CREATE_MUTATION = `
+  mutation fileCreate($files: [FileCreateInput!]!) {
+    fileCreate(files: $files) {
+      files {
+        id
+        fileStatus
+        alt
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+const FILE_STATUS_QUERY = `
+  query getFileStatus($id: ID!) {
+    node(id: $id) {
+      ... on MediaImage {
+        id
+        fileStatus
+      }
+      ... on GenericFile {
+        id
+        fileStatus
+      }
+    }
+  }
+`;
+
+async function uploadImageAsShopifyFile(imageUrl, altText) {
+  try {
+    const data = await shopifyGraphQL(FILE_CREATE_MUTATION, {
+      files: [
+        {
+          originalSource: imageUrl,
+          alt: altText || 'Ingredient image',
+          contentType: 'IMAGE'
+        }
+      ]
+    });
+
+    if (data.fileCreate?.userErrors?.length) {
+      throw new Error(JSON.stringify(data.fileCreate.userErrors));
+    }
+
+    const file = data.fileCreate?.files?.[0];
+    if (!file?.id) return null;
+
+    // Poll briefly for processing to finish (Shopify fetches the source URL async)
+    let fileId = file.id;
+    let status = file.fileStatus;
+    for (let attempt = 0; attempt < 5 && status === 'UPLOADED'; attempt++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const statusData = await shopifyGraphQL(FILE_STATUS_QUERY, { id: fileId });
+      status = statusData?.node?.fileStatus || status;
+    }
+
+    console.log(`✅ Image uploaded to Shopify Files: ${fileId} (status: ${status})`);
+    return fileId;
+  } catch (err) {
+    console.warn(`⚠️  Failed to upload image to Shopify Files:`, err.message);
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────
 // Resolve the real metaobject type handle for "Key Ingredients".
 // The handle may be app-namespaced (e.g. "app--12345--key_ingredients")
 // rather than the plain "key_ingredients" we assumed, so look it up by
@@ -617,11 +692,10 @@ async function resolveIngredientMetaobjectType() {
   try {
     const data = await shopifyGraphQL(METAOBJECT_DEFINITIONS_QUERY, {});
     const defs = data?.metaobjectDefinitions?.edges?.map((e) => e.node) || [];
-    console.log('📎 Available metaobject definitions:', JSON.stringify(defs));
 
     const match = defs.find(
       (d) =>
-        d.type === 'key_ingredients' ||
+        d.type === INGREDIENT_METAOBJECT_TYPE ||
         /key.?ingredients?/i.test(d.name || '') ||
         /key.?ingredients?/i.test(d.type || '')
     );
@@ -632,11 +706,16 @@ async function resolveIngredientMetaobjectType() {
       return match.type;
     }
 
-    console.warn('⚠️  Could not find a metaobject definition matching "Key Ingredients" — check Settings > Custom data > Metaobjects');
-    return null;
+    // API listed 0 definitions — most likely a missing read_metaobject_definitions
+    // scope on this token, rather than the type not existing. Fall back to the
+    // confirmed value from Shopify Admin (Settings > Custom data > Metaobjects).
+    console.warn(`⚠️  metaobjectDefinitions returned no match — falling back to confirmed type "${INGREDIENT_METAOBJECT_TYPE}"`);
+    cachedIngredientMetaobjectType = INGREDIENT_METAOBJECT_TYPE;
+    return INGREDIENT_METAOBJECT_TYPE;
   } catch (err) {
-    console.error('❌ Failed to list metaobject definitions:', err.message);
-    return null;
+    console.warn(`⚠️  Failed to list metaobject definitions, falling back to confirmed type "${INGREDIENT_METAOBJECT_TYPE}":`, err.message);
+    cachedIngredientMetaobjectType = INGREDIENT_METAOBJECT_TYPE;
+    return INGREDIENT_METAOBJECT_TYPE;
   }
 }
 
@@ -717,7 +796,12 @@ async function createOrUpdateIngredientMetaobject(ingredient) {
     ];
 
     if (ingredient.imageUrl) {
-      fields.push({ key: 'ingredient_image', value: ingredient.imageUrl });
+      const fileGid = await uploadImageAsShopifyFile(ingredient.imageUrl, ingredient.title);
+      if (fileGid) {
+        fields.push({ key: 'ingredient_image', value: fileGid });
+      } else {
+        console.warn(`⚠️  Skipping ingredient_image for "${ingredient.title}" — file upload failed`);
+      }
     }
 
     let result;
