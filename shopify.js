@@ -525,7 +525,7 @@ async function getRelatedIngredients(productId, contentHubBaseUrl, token) {
           id: ingredientEntity.id,
           title: extractLocalizedText(props.Title || ingredientEntity.identifier),
           description: extractLocalizedText(props.Description),
-          imageUrl: await resolveIngredientImageUrl(ingredientEntity, contentHubBaseUrl, token)
+          // imageUrl: await resolveIngredientImageUrl(ingredientEntity, contentHubBaseUrl, token)
         };
 
         if (ingredientData.title) {
@@ -553,41 +553,41 @@ async function getRelatedIngredients(productId, contentHubBaseUrl, token) {
 // so we check both an inline rendition on the ingredient entity itself
 // (in case it's stored directly) and a linked M.Asset entity as fallback.
 // ─────────────────────────────────────────────
-async function resolveIngredientImageUrl(ingredientEntity, contentHubBaseUrl, token) {
-  // Case 1: renditions exist directly on the ingredient entity (unlikely given
-  // the schema, but cheap to check first)
-  const directRenditions = ingredientEntity?.renditions;
-  if (directRenditions && typeof directRenditions === 'object') {
-    const directUrl = directRenditions.downloadOriginal?.[0]?.href
-      || directRenditions.downloadOriginal?.[0]?.url;
-    if (directUrl) return directUrl;
-  }
+// async function resolveIngredientImageUrl(ingredientEntity, contentHubBaseUrl, token) {
+//   // Case 1: renditions exist directly on the ingredient entity (unlikely given
+//   // the schema, but cheap to check first)
+//   const directRenditions = ingredientEntity?.renditions;
+//   if (directRenditions && typeof directRenditions === 'object') {
+//     const directUrl = directRenditions.downloadOriginal?.[0]?.href
+//       || directRenditions.downloadOriginal?.[0]?.url;
+//     if (directUrl) return directUrl;
+//   }
 
-  // Case 2: IngredientImage is a relation from the ingredient entity to M.Asset
-  // ("KeyIngredients is Parent of M.Asset"), using the same
-  // /relations/{name} -> { children: [{href}] } shape as KeyIngredients itself.
-  try {
-    const response = await axios.get(
-      `${contentHubBaseUrl}/api/entities/${ingredientEntity.id}/relations/${INGREDIENT_IMAGE_RELATION_NAME}`,
-      {
-        params: { take: 10, skip: 0 },
-        headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' },
-        timeout: 10000
-      }
-    );
+//   // Case 2: IngredientImage is a relation from the ingredient entity to M.Asset
+//   // ("KeyIngredients is Parent of M.Asset"), using the same
+//   // /relations/{name} -> { children: [{href}] } shape as KeyIngredients itself.
+//   try {
+//     const response = await axios.get(
+//       `${contentHubBaseUrl}/api/entities/${ingredientEntity.id}/relations/${INGREDIENT_IMAGE_RELATION_NAME}`,
+//       {
+//         params: { take: 10, skip: 0 },
+//         headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' },
+//         timeout: 10000
+//       }
+//     );
 
-    const assetHref = response.data?.children?.[0]?.href;
-    const assetId = extractIdFromHref(assetHref);
-    if (!assetId) return null;
+//     const assetHref = response.data?.children?.[0]?.href;
+//     const assetId = extractIdFromHref(assetHref);
+//     if (!assetId) return null;
 
-    const assetEntity = await getEntity(assetId, contentHubBaseUrl, token);
-    const { imageUrl } = extractAssetImage(assetEntity);
-    return imageUrl;
-  } catch (err) {
-    console.warn(`⚠️  Could not resolve IngredientImage for ingredient ${ingredientEntity.id}:`, err.response?.status, err.message);
-    return null;
-  }
-}
+//     const assetEntity = await getEntity(assetId, contentHubBaseUrl, token);
+//     const { imageUrl } = extractAssetImage(assetEntity);
+//     return imageUrl;
+//   } catch (err) {
+//     console.warn(`⚠️  Could not resolve IngredientImage for ingredient ${ingredientEntity.id}:`, err.response?.status, err.message);
+//     return null;
+//   }
+// }
 
 // ─────────────────────────────────────────────
 // Upload an external image URL into Shopify Files, returning the resulting
