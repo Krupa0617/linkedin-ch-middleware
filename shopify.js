@@ -23,7 +23,7 @@ const {
   DATA_DIR
 } = process.env;
 
-const SHOPIFY_VERSION = '2026-07';
+const SHOPIFY_VERSION ='2026-07';
 
 // Key Ingredients configuration — hardcoded (no .env entries needed).
 // Confirmed from your Content Hub instance: the relation is "KeyIngredients",
@@ -32,7 +32,9 @@ const INGREDIENT_RELATION_NAME = 'KeyIngredients';
 // Confirmed from schema: "KeyIngredients is Parent of M.Asset" via the "IngredientImage" relation
 const INGREDIENT_IMAGE_RELATION_NAME = 'IngredientImage';
 
-const INGREDIENT_METAOBJECT_TYPE = 'key_ingredients';
+// Metaobject type handle for Key Ingredients is resolved dynamically at
+// runtime (see resolveIngredientMetaobjectType) since it may be app-namespaced
+// rather than the plain "key_ingredients" string.
 const KEY_INGREDIENTS_METAFIELD_NAMESPACE = 'custom';
 const KEY_INGREDIENTS_METAFIELD_KEY = 'key_ingredients';
 
@@ -588,6 +590,57 @@ async function resolveIngredientImageUrl(ingredientEntity, contentHubBaseUrl, to
 }
 
 // ─────────────────────────────────────────────
+// Resolve the real metaobject type handle for "Key Ingredients".
+// The handle may be app-namespaced (e.g. "app--12345--key_ingredients")
+// rather than the plain "key_ingredients" we assumed, so look it up by
+// name instead of hardcoding it, and cache the result.
+// ─────────────────────────────────────────────
+const METAOBJECT_DEFINITIONS_QUERY = `
+  query listMetaobjectDefinitions {
+    metaobjectDefinitions(first: 50) {
+      edges {
+        node {
+          id
+          type
+          name
+        }
+      }
+    }
+  }
+`;
+
+let cachedIngredientMetaobjectType = null;
+
+async function resolveIngredientMetaobjectType() {
+  if (cachedIngredientMetaobjectType) return cachedIngredientMetaobjectType;
+
+  try {
+    const data = await shopifyGraphQL(METAOBJECT_DEFINITIONS_QUERY, {});
+    const defs = data?.metaobjectDefinitions?.edges?.map((e) => e.node) || [];
+    console.log('📎 Available metaobject definitions:', JSON.stringify(defs));
+
+    const match = defs.find(
+      (d) =>
+        d.type === 'key_ingredients' ||
+        /key.?ingredients?/i.test(d.name || '') ||
+        /key.?ingredients?/i.test(d.type || '')
+    );
+
+    if (match) {
+      cachedIngredientMetaobjectType = match.type;
+      console.log(`✅ Resolved Key Ingredients metaobject type: "${match.type}"`);
+      return match.type;
+    }
+
+    console.warn('⚠️  Could not find a metaobject definition matching "Key Ingredients" — check Settings > Custom data > Metaobjects');
+    return null;
+  } catch (err) {
+    console.error('❌ Failed to list metaobject definitions:', err.message);
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────
 // Create/Update Metaobject for a Key Ingredient in Shopify
 // Field keys (title, description, ingredient_image) must match the
 // metaobject definition's field keys under Settings > Custom data > Metaobjects.
@@ -632,11 +685,11 @@ const FIND_METAOBJECT_BY_HANDLE_QUERY = `
   }
 `;
 
-async function findExistingIngredientMetaobject(ingredientId) {
+async function findExistingIngredientMetaobject(ingredientId, metaobjectType) {
   try {
     const handle = `ingredient-${ingredientId}`;
     const data = await shopifyGraphQL(FIND_METAOBJECT_BY_HANDLE_QUERY, {
-      type: INGREDIENT_METAOBJECT_TYPE,
+      type: metaobjectType,
       handle
     });
     return data?.metaobjectByHandle?.id || null;
@@ -650,7 +703,13 @@ async function createOrUpdateIngredientMetaobject(ingredient) {
   try {
     console.log(`\n📝 Creating/Updating Key Ingredient metaobject: ${ingredient.title}`);
 
-    const existingMetaobjectId = await findExistingIngredientMetaobject(ingredient.id);
+    const metaobjectType = await resolveIngredientMetaobjectType();
+    if (!metaobjectType) {
+      console.warn(`⚠️  Skipping "${ingredient.title}" — no Key Ingredients metaobject definition found in this store`);
+      return null;
+    }
+
+    const existingMetaobjectId = await findExistingIngredientMetaobject(ingredient.id, metaobjectType);
 
     const fields = [
       { key: 'title', value: ingredient.title },
@@ -685,7 +744,7 @@ async function createOrUpdateIngredientMetaobject(ingredient) {
       console.log(`✨ Creating new metaobject for: ${ingredient.title}`);
       const data = await shopifyGraphQL(CREATE_METAOBJECT_MUTATION, {
         metaobject: {
-          type: INGREDIENT_METAOBJECT_TYPE,
+          type: metaobjectType,
           handle: `ingredient-${ingredient.id}`,
           fields,
           capabilities: { publishable: { status: 'ACTIVE' } }
