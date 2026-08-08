@@ -31,7 +31,7 @@ const SHOPIFY_VERSION = SHOPIFY_API_VERSION || '2026-07';
 // accessed directly at /api/entities/{productId}/relations/KeyIngredients
 const INGREDIENT_RELATION_NAME = 'KeyIngredients';
 // Confirmed from schema: "KeyIngredients is Parent of M.Asset" via the "IngredientImage" relation
-const INGREDIENT_IMAGE_RELATION_NAME = 'IngredientImage';
+const INGREDIENT_IMAGE_RELATION_NAME = 'ingredientImage';
 
 // Confirmed from Settings > Custom data > Metaobjects > Key Ingredients: Type = "key_ingredients"
 const INGREDIENT_METAOBJECT_TYPE = 'key_ingredients';
