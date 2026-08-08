@@ -795,15 +795,12 @@ async function createOrUpdateIngredientMetaobject(ingredient) {
       { key: 'description', value: ingredient.description || '' }
     ];
 
-    if (ingredient.imageUrl) {
-      const fileGid = await uploadImageAsShopifyFile(ingredient.imageUrl, ingredient.title);
-      if (fileGid) {
-        fields.push({ key: 'ingredient_image', value: fileGid });
-      } else {
-        console.warn(`⚠️  Skipping ingredient_image for "${ingredient.title}" — file upload failed`);
-      }
-    }
-
+   if (ingredient.imageUrl) {
+  const fileGid = await uploadImageAsShopifyFile(ingredient.imageUrl, ingredient.title);
+  if (fileGid) {
+    fields.push({ key: 'IngredientImage', value: fileGid });  // ✅ CORRECT
+  }
+}
     let result;
     if (existingMetaobjectId) {
       // MetaobjectUpdateInput only accepts fields/capabilities — type and
