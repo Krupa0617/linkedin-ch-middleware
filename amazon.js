@@ -385,6 +385,7 @@ app.post("/amazon/publish", verifyApiKey, async (req, res) => {
 
     // Content Hub sends the triggering entity's id via header
     const productId = req.headers.target_id;
+      const sourceSystem = req.headers['source_system'] || CONTENT_HUB_URL;
 
     log("Received /amazon/publish request", { productId, headers: req.headers });
 
@@ -415,6 +416,10 @@ app.post("/amazon/publish", verifyApiKey, async (req, res) => {
                 message: err.message
             });
         }
+    }
+      const chToken = await getContentHubToken(sourceSystem);
+    if (!chToken) {
+      return res.status(500).json({ error: 'Content Hub auth failed' });
     }
       const entity = await getEntity(productId, sourceSystem, chToken);
     const definitionName = extractDefinitionName(entity);
@@ -926,9 +931,7 @@ const contentHubToken = await getContentHubToken(CONTENT_HUB_URL);
 
     console.log("Amazon Response", amazonResult);
 
-   
-
-    return {
+       return {
         entityType: "Asset",
         productId,
         sku,
