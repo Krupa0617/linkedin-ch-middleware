@@ -720,85 +720,9 @@ async function resolveIngredientMetaobjectType() {
 }
 
 // ─────────────────────────────────────────────
-// ✅ AUTO-DETECT: Get actual field keys from Shopify metaobject definition
-// This queries Shopify once at runtime and caches the result, so we don't
-// have to hardcode field keys that might be different in your setup.
-// ─────────────────────────────────────────────
-let cachedIngredientFieldKeys = null;
-
-async function getIngredientFieldKeys() {
-  if (cachedIngredientFieldKeys) {
-    return cachedIngredientFieldKeys;
-  }
-
-  try {
-    console.log('🔍 Querying Shopify for Key Ingredients metaobject field keys...');
-    
-    const query = `
-      query {
-        metaobjectDefinitions(first: 50) {
-          edges {
-            node {
-              name
-              type
-              fields(first: 20) {
-                edges {
-                  node {
-                    key
-                    name
-                    type {
-                      name
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    `;
-
-    const data = await shopifyGraphQL(query, {});
-    const defs = data?.metaobjectDefinitions?.edges || [];
-    
-    // Find the key_ingredients definition
-    const keyIngDef = defs.find(edge => 
-      edge.node.type === 'key_ingredients' || 
-      /key.?ingredients?/i.test(edge.node.name)
-    );
-
-    if (!keyIngDef) {
-      console.warn('⚠️  Could not find key_ingredients metaobject definition');
-      return null;
-    }
-
-    // Build a map of field names to keys
-    const fieldMap = {};
-    const fieldEdges = keyIngDef.node.fields?.edges || [];
-    
-    console.log(`\n📋 Found Key Ingredients Metaobject with ${fieldEdges.length} fields:`);
-    fieldEdges.forEach(edge => {
-      const field = edge.node;
-      fieldMap[field.name] = {
-        key: field.key,
-        type: field.type.name
-      };
-      console.log(`   ✅ "${field.name}" → key: "${field.key}" (${field.type.name})`);
-    });
-    console.log('');
-
-    // Cache for future use
-    cachedIngredientFieldKeys = fieldMap;
-    return fieldMap;
-  } catch (err) {
-    console.error('❌ Failed to get ingredient field keys:', err.message);
-    return null;
-  }
-}
-
-// ─────────────────────────────────────────────
 // Create/Update Metaobject for a Key Ingredient in Shopify
-// ✅ NOW AUTO-DETECTS field keys instead of hardcoding them
+// Field keys (title, description, ingredient_image) must match the
+// metaobject definition's field keys under Settings > Custom data > Metaobjects.
 // ─────────────────────────────────────────────
 const CREATE_METAOBJECT_MUTATION = `
   mutation createMetaobject($metaobject: MetaobjectCreateInput!) {
@@ -854,7 +778,9 @@ async function findExistingIngredientMetaobject(ingredientId, metaobjectType) {
   }
 }
 
-// ✅ UPDATED: Now uses auto-detected field keys
+// 🔧 CORRECTED: createOrUpdateIngredientMetaobject() function
+// This version fixes the IngredientImage field key issue
+
 async function createOrUpdateIngredientMetaobject(ingredient) {
   try {
     console.log(`\n📝 Creating/Updating Key Ingredient metaobject: ${ingredient.title}`);
@@ -865,47 +791,40 @@ async function createOrUpdateIngredientMetaobject(ingredient) {
       return null;
     }
 
-    // ✅ NEW: Auto-detect field keys from Shopify
-    const fieldMap = await getIngredientFieldKeys();
-    if (!fieldMap) {
-      console.warn(`⚠️  Skipping "${ingredient.title}" — could not get field keys from Shopify`);
-      return null;
-    }
-
     const existingMetaobjectId = await findExistingIngredientMetaobject(ingredient.id, metaobjectType);
 
-    // ✅ Build fields using actual keys from Shopify (no hardcoding!)
-    const fields = [];
+    // ✅ FIX: Use actual field keys from your metaobject definition
+    // Check Settings > Custom data > Metaobjects > key_ingredients
+    // Copy the exact "Field key" values from that table
+    const fields = [
+      { key: 'title', value: ingredient.title },              // ⚠️ Verify this key exists
+      { key: 'description', value: ingredient.description || '' }  // ⚠️ Verify this key exists
+    ];
 
-    // Add Title field
-    if (fieldMap['Title']?.key) {
-      fields.push({ key: fieldMap['Title'].key, value: ingredient.title });
-      console.log(`   • Title field: key="${fieldMap['Title'].key}"`);
-    } else {
-      console.warn(`⚠️  Could not find Title field in metaobject definition`);
-    }
+    // ❌ OLD (WRONG):
+    // if (ingredient.imageUrl) {
+    //   const fileGid = await uploadImageAsShopifyFile(ingredient.imageUrl, ingredient.title);
+    //   if (fileGid) {
+    //     fields.push({ key: 'IngredientImage', value: fileGid });  // This field doesn't exist!
+    //   }
+    // }
 
-    // Add Description field
-    if (fieldMap['Description']?.key) {
-      fields.push({ key: fieldMap['Description'].key, value: ingredient.description || '' });
-      console.log(`   • Description field: key="${fieldMap['Description'].key}"`);
-    } else {
-      console.warn(`⚠️  Could not find Description field in metaobject definition`);
-    }
-
-    // Add Image field
-    if (ingredient.imageUrl && fieldMap['IngredientImage']?.key) {
+    // ✅ NEW (CORRECT):
+    // Replace 'ingredient_image' with the ACTUAL field key from your metaobject definition
+    if (ingredient.imageUrl) {
       const fileGid = await uploadImageAsShopifyFile(ingredient.imageUrl, ingredient.title);
       if (fileGid) {
-        // ✅ Use the actual key from Shopify, not hardcoded!
-        fields.push({ key: fieldMap['IngredientImage'].key, value: fileGid });
-        console.log(`   • IngredientImage field: key="${fieldMap['IngredientImage'].key}"`);
+        // ⚠️ CHANGE THIS: Replace 'ingredient_image' with your actual field key
+        // Common variations:
+        //   - 'ingredient_image'
+        //   - 'image'
+        //   - 'ingredientImage'
+        //   - 'ingredient_picture'
+        // Check your metaobject definition to find the exact key!
+        const imageFieldKey = 'ingredient_image';  // ← UPDATE THIS LINE
+        fields.push({ key: imageFieldKey, value: fileGid });
       }
-    } else if (ingredient.imageUrl) {
-      console.warn(`⚠️  Could not find IngredientImage field in metaobject definition`);
     }
-
-    console.log(`   Setting ${fields.length} fields on metaobject`);
 
     let result;
     if (existingMetaobjectId) {
@@ -920,7 +839,8 @@ async function createOrUpdateIngredientMetaobject(ingredient) {
       });
 
       if (data.metaobjectUpdate?.userErrors?.length) {
-        console.error('❌ Update errors:', JSON.stringify(data.metaobjectUpdate.userErrors, null, 2));
+        // Better error logging
+        console.error(`❌ Metaobject update errors:`, JSON.stringify(data.metaobjectUpdate.userErrors, null, 2));
         throw new Error(JSON.stringify(data.metaobjectUpdate.userErrors));
       }
       result = data.metaobjectUpdate.metaobject;
@@ -938,7 +858,8 @@ async function createOrUpdateIngredientMetaobject(ingredient) {
       });
 
       if (data.metaobjectCreate?.userErrors?.length) {
-        console.error('❌ Creation errors:', JSON.stringify(data.metaobjectCreate.userErrors, null, 2));
+        // Better error logging
+        console.error(`❌ Metaobject creation errors:`, JSON.stringify(data.metaobjectCreate.userErrors, null, 2));
         throw new Error(JSON.stringify(data.metaobjectCreate.userErrors));
       }
       result = data.metaobjectCreate.metaobject;
@@ -948,9 +869,73 @@ async function createOrUpdateIngredientMetaobject(ingredient) {
     return result;
   } catch (err) {
     console.error(`❌ Failed to create/update Key Ingredient metaobject:`, err.message);
+    
+    // New: Log the field name that failed
+    if (err.message.includes('Field definition')) {
+      console.error(`⚠️  Field definition error detected`);
+      console.error(`   Check Settings > Custom data > Metaobjects > key_ingredients`);
+      console.error(`   Make sure all field keys in the code match exactly`);
+    }
+    
     return null;
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔍 NEW HELPER: Query Shopify to find exact field keys
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function getIngredientMetaobjectFieldKeys() {
+  try {
+    const query = `
+      query {
+        metaobjectDefinitions(first: 50) {
+          edges {
+            node {
+              name
+              type
+              fields(first: 20) {
+                edges {
+                  node {
+                    key
+                    name
+                    type {
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const data = await shopifyGraphQL(query, {});
+    const defs = data?.metaobjectDefinitions?.edges?.map((e) => e.node) || [];
+    const keyIngDef = defs.find(d => d.type === 'key_ingredients' || /key.?ingredients?/i.test(d.name));
+
+    if (keyIngDef) {
+      console.log(`\n📋 Key Ingredients Metaobject Fields:`);
+      console.log(`   Type: ${keyIngDef.type}`);
+      const fieldEdges = keyIngDef.fields?.edges || [];
+      fieldEdges.forEach(edge => {
+        const field = edge.node;
+        console.log(`   • ${field.name} → key: "${field.key}" (${field.type.name})`);
+      });
+      return fieldEdges.map(e => e.node);
+    } else {
+      console.warn(`⚠️  No Key Ingredients metaobject definition found`);
+      return [];
+    }
+  } catch (err) {
+    console.error(`❌ Failed to fetch metaobject fields:`, err.message);
+    return [];
+  }
+}
+
+// Run this once at startup to log the correct field keys:
+// await getIngredientMetaobjectFieldKeys();
 
 // ─────────────────────────────────────────────
 // NEW: Link the created ingredient metaobjects to the product's
