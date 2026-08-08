@@ -394,7 +394,9 @@ app.post("/amazon/publish", verifyApiKey, async (req, res) => {
     if (!productId) {
         log("Connection test request - validating Amazon connectivity");
         
+      
         try {
+          
             // Test Amazon authentication
             await getAmazonAccessToken();
             
@@ -414,12 +416,30 @@ app.post("/amazon/publish", verifyApiKey, async (req, res) => {
             });
         }
     }
+      const entity = await getEntity(productId, sourceSystem, chToken);
+    const definitionName = extractDefinitionName(entity);
+    console.log(`✅ Definition: ${definitionName}`);
 
+    if (!definitionName) {
+      return res.status(400).json({ error: 'Could not extract definition name from entity' });
+    }
+
+  
     // ═══════════════════════════════════════════════════════════════
     // HANDLE: Actual Product Sync (productId present)
     // ═══════════════════════════════════════════════════════════════
     try {
-        const result = await syncProductToAmazon(productId);
+        let result;
+    if (definitionName === 'M.PCM.Product') {
+      result = await syncProductToAmazon(productId);
+    } else if (definitionName === 'M.Asset') {
+      result = await handleAssetPush(productId);
+    } else {
+      return res.status(400).json({
+        error: `Unsupported entity type: ${definitionName}`
+      });
+    }
+       // const result = await syncProductToAmazon(productId);
 
         res.status(200).json({
             success: true,
@@ -811,6 +831,113 @@ async function syncProductToAmazon(productId) {
         amazon: amazonResult
     };
 }
+
+// ─────────────────────────────────────────────
+// Handle asset creation/update
+// ─────────────────────────────────────────────
+async function handleAssetPush(productId) {
+const contentHubToken = await getContentHubToken(CONTENT_HUB_URL);
+    if (!contentHubToken) {
+        throw new Error("Failed to authenticate with Content Hub");
+    }
+    //------------------------------------------------------
+    // Fetch Asset
+    //------------------------------------------------------
+
+    const asset = await getEntity(
+        productId,
+        CONTENT_HUB_URL,
+        contentHubToken
+    );
+
+    const { title, imageUrl } = extractAssetImage(asset);
+
+    if (!imageUrl) {
+        throw new Error("Asset has no usable image.");
+    }
+
+    const sku = `hima${productId}`;
+
+    console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    console.log("Asset :", title);
+    console.log("SKU   :", sku);
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+
+    //------------------------------------------------------
+    // Description
+    //------------------------------------------------------
+
+    let description = "";
+
+    const desc = asset.properties?.Description;
+
+    if (typeof desc === "string") {
+
+        description = desc;
+
+    } else if (desc && typeof desc === "object") {
+
+        description =
+            desc["en-US"] ||
+            Object.values(desc)[0] ||
+            "";
+
+    }
+
+    //------------------------------------------------------
+    // Build Amazon Payload
+    //------------------------------------------------------
+
+    const payload = {
+
+        productType: PRODUCT_TYPES.DEFAULT,
+
+        attributes: {
+
+            item_name: [{
+                value: title,
+                marketplace_id: MARKETPLACE_ID
+            }],
+
+            brand: [{
+                value: "Himalaya Wellness",
+                marketplace_id: MARKETPLACE_ID
+            }],
+
+            product_description: [{
+                value: description,
+                marketplace_id: MARKETPLACE_ID
+            }],
+
+            main_product_image_locator: [{
+                media_location: imageUrl,
+                marketplace_id: MARKETPLACE_ID
+            }]
+        }
+
+    };
+
+    //------------------------------------------------------
+    // Push Listing
+    //------------------------------------------------------
+
+    const amazonResult =
+        await pushListingToAmazon(sku, payload);
+
+    console.log("Amazon Response", amazonResult);
+
+   
+
+    return {
+        entityType: "Asset",
+        productId,
+        sku,
+        title,
+        amazonResult
+    };
+
+}
+
 
 app.post("/sync-product/:productId", verifyApiKey, async (req, res) => {
     const { productId } = req.params;
