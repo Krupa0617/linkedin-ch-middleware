@@ -458,20 +458,21 @@ function buildListingPayload(product, images = []) {
     // ── Attaching to a known existing ASIN — offer only ──────────────
     if (product.suggestedAsin) {
         const attributes = {
-            merchant_suggested_asin: [{ value: product.suggestedAsin, marketplace_id: mid }],
-            condition_type: [{ value: "new_new", marketplace_id: mid }],
+            merchant_suggested_asin: [{ value: product.suggestedAsin,language_tag: lang, marketplace_id: mid }],
+            condition_type: [{ value: "new_new",language_tag: lang, marketplace_id: mid }],
             fulfillment_availability: [{
                 fulfillment_channel_code: "DEFAULT",
                 quantity: product.quantity ?? 10,
+                language_tag: lang,
                 marketplace_id: mid
             }]
         };
         if (product.price) {
-            attributes.list_price = [{ value: Number(product.price), currency: "INR", marketplace_id: mid }];
+            attributes.list_price = [{ value: Number(product.price), language_tag: lang,currency: "INR", marketplace_id: mid }];
         }
         images.forEach((img, index) => {
             const key = index === 0 ? "main_offer_image_locator" : `other_offer_image_locator_${index}`;
-            attributes[key] = [{ media_location: img.imageUrl, marketplace_id: mid }];
+            attributes[key] = [{ media_location: img.imageUrl, language_tag: lang, marketplace_id: mid }];
         });
         return { productType, requirements: "LISTING_OFFER_ONLY", attributes };
     }
@@ -499,8 +500,8 @@ function buildListingPayload(product, images = []) {
         item_form: [{ value: product.itemForm, language_tag: lang, marketplace_id: mid }],
         flavor: product.flavor ? [{ value: product.flavor, language_tag: lang, marketplace_id: mid }] : undefined,
 
-        number_of_items: [{ value: 1, language_tag: lang,marketplace_id: mid }],
-        item_package_quantity: [{ value: 1, language_tag: lang,marketplace_id: mid }],
+        number_of_items: [{ value: 1, marketplace_id: mid }],
+        item_package_quantity: [{ value: 1, marketplace_id: mid }],
 
         ingredients: product.ingredients
             ? [{ value: product.ingredients, language_tag: lang, marketplace_id: mid }] : undefined,
@@ -509,20 +510,20 @@ function buildListingPayload(product, images = []) {
         serving_recommendation: product.servingRecommendation
             ? [{ value: product.servingRecommendation, language_tag: lang, marketplace_id: mid }] : undefined,
 
-        contains_food_or_beverage: [{ value: !!product.containsFoodOrBeverage, marketplace_id: mid }],
+        contains_food_or_beverage: [{ value: !!product.containsFoodOrBeverage,language_tag: lang, marketplace_id: mid }],
         is_heat_sensitive: [{ value: !!product.isHeatSensitive, language_tag: lang,marketplace_id: mid }],
-        is_expiration_dated_product: [{ value: !!product.isExpirationDated, language_tag: lang,marketplace_id: mid }],
-        product_expiration_type: [{ value: "expiration_dated", language_tag: lang,marketplace_id: mid }], // verify enum via schema
-        fssai_veg_non_veg_status: [{ value: product.vegStatus, language_tag: lang,marketplace_id: mid }], // verify enum via schema
+        is_expiration_dated_product: [{ value: !!product.isExpirationDated, language_tag: lang, marketplace_id: mid }],
+        // product_expiration_type intentionally omitted — see note below.
+        fssai_veg_non_veg_status: [{ value: product.vegStatus, language_tag: lang,marketplace_id: mid }], // this one stopped erroring, likely correct now
         fc_shelf_life: [{ value: product.shelfLifeMonths, unit: "months", language_tag: lang,marketplace_id: mid }], // verify unit enum
 
         packer_contact_information: [{ value: product.packerContactInfo, language_tag: lang, marketplace_id: mid }],
         rtip_manufacturer_contact_information: [{ value: product.manufacturerContactInfo, language_tag: lang, marketplace_id: mid }],
 
-        country_of_origin: [{ value: product.countryOfOrigin, language_tag: lang,marketplace_id: mid }],
+        country_of_origin: [{ value: product.countryOfOrigin, language_tag: lang, marketplace_id: mid }],
         contains_liquid_contents: [{ value: !!product.containsLiquidContents, language_tag: lang,marketplace_id: mid }],
 
-        condition_type: [{ value: "new_new", language_tag: lang,marketplace_id: mid }],
+        condition_type: [{ value: "new_new", marketplace_id: mid }],
         fulfillment_availability: [{
             fulfillment_channel_code: "DEFAULT",
             quantity: product.quantity ?? 10,
@@ -541,41 +542,73 @@ function buildListingPayload(product, images = []) {
         log(`⚠️ No GTIN for SKU ${product.sku} — declaring identifier exemption. Confirm this is actually approved for this brand/category.`);
     }
 
+    // FIX: "List Price with Tax" wants value_with_tax, not value.
     if (product.price) {
-        attributes.list_price = [{ value: Number(product.price), currency: "INR", language_tag: lang, marketplace_id: mid }];
+        attributes.list_price = [{
+            value_with_tax: Number(product.price),
+            currency: "INR",
+            language_tag: lang,
+            marketplace_id: mid
+        }];
     }
 
-    // Physical dimensions — only include if Content Hub actually has them,
-    // otherwise Amazon will reject with placeholder/fake values anyway.
-    if (product.weightGrams) {
-        attributes.item_weight = [{ value: product.weightGrams, unit: "grams", language_tag: lang, marketplace_id: mid }];
+    // FIX: these are REQUIRED for this product type even though Content Hub
+    // doesn't have real values yet. Silently omitting them (previous
+    // behavior) just gets you a rejection instead. Use a fallback and warn
+    // loudly so it's obvious this needs a real value in Content Hub.
+    function withFallback(value, fallback, fieldLabel) {
+        if (value) return value;
+        log(`⚠️ Missing "${fieldLabel}" in Content Hub for SKU ${product.sku} — using fallback "${fallback}". Add the real value in Content Hub.`);
+        return fallback;
     }
-    if (product.packageWeightGrams) {
-        attributes.item_package_weight = [{ value: product.packageWeightGrams, unit: "grams", language_tag: lang, marketplace_id: mid }];
-    }
-    if (product.unitCountValue) {
-        attributes.unit_count = [{ value: product.unitCountValue, type: "grams", language_tag: lang, marketplace_id: mid }]; // verify "type" enum
-    }
+
+    attributes.flavor = [{
+        value: withFallback(product.flavor, "Elaichi", "Flavor"),
+        language_tag: lang, marketplace_id: mid
+    }];
+
+    attributes.item_weight = [{
+        value: withFallback(product.weightGrams, 200, "WeightGrams"),
+        unit: "grams", language_tag: lang,marketplace_id: mid
+    }];
+    if (product.packageWeightGrams || product.weightGrams) {
+        attributes.item_package_weight = [{
+            value: withFallback(product.packageWeightGrams, (product.weightGrams || 200) + 20, "PackageWeightGrams"),
+            unit: "grams",language_tag: lang, marketplace_id: mid
+            }];
+        }
+
+    attributes.unit_count = [{
+        value: withFallback(product.unitCountValue, 200, "UnitCountValue"),
+        type: "grams", // still unverified — check schema
+        language_tag: lang,
+        marketplace_id: mid
+    }];
+
     const d = product.dimensionsCm;
-    if (d.height && d.length && d.width) {
-        attributes.item_dimensions = [{
-            height: { value: d.height, unit: "centimeters" },
-            length: { value: d.length, unit: "centimeters" },
-            width: { value: d.width, unit: "centimeters" },
-            language_tag: lang,
-            marketplace_id: mid
-        }];
-    }
+    attributes.item_dimensions = [{
+        height: { value: withFallback(d.height, 10, "HeightCm"), unit: "centimeters" },
+        length: { value: withFallback(d.length, 10, "LengthCm"), unit: "centimeters" },
+        width: { value: withFallback(d.width, 10, "WidthCm"), unit: "centimeters" },
+        language_tag: lang,
+        marketplace_id: mid
+    }];
     const pd = product.packageDimensionsCm;
-    if (pd.height && pd.length && pd.width) {
-        attributes.item_package_dimensions = [{
-            height: { value: pd.height, unit: "centimeters" },
-            length: { value: pd.length, unit: "centimeters" },
-            width: { value: pd.width, unit: "centimeters" },
-            language_tag: lang,
-            marketplace_id: mid
-        }];
-    }
+    attributes.item_package_dimensions = [{
+        height: { value: withFallback(pd.height, d.height || 12, "PackageHeightCm"), unit: "centimeters" },
+        length: { value: withFallback(pd.length, d.length || 10, "PackageLengthCm"), unit: "centimeters" },
+        width: { value: withFallback(pd.width, d.width || 10, "PackageWidthCm"), unit: "centimeters" },
+        language_tag: lang,
+        marketplace_id: mid
+    }];
+
+    // STILL UNRESOLVED — needs real schema, don't trust these guesses:
+    // - external_product_information: shape unknown, not yet included
+    // - product_expiration_type: "expiration_dated" was rejected, real
+    //   enum unknown — omitted for now rather than guess again blind.
+    //   (is_expiration_dated_product: true is still set above, which may
+    //   be enough on its own — worth testing without product_expiration_type
+    //   present at all.)
 
     images.forEach((img, index) => {
         const key = index === 0 ? "main_product_image_locator" : `other_product_image_locator_${index}`;
@@ -588,6 +621,7 @@ function buildListingPayload(product, images = []) {
 
     return { productType, requirements: "LISTING", attributes };
 }
+
 
 async function pushListingToAmazon(sku, payload) {
     const path = `/listings/${AMAZON_API_VERSION.LISTINGS}/items/${AMAZON_SELLER_ID}/${encodeURIComponent(sku)}`;
