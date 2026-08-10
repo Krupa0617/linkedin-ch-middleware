@@ -454,7 +454,7 @@ function buildListingPayload(product, images = []) {
     const productType = "NUTRITIONAL_SUPPLEMENT";
     const lang = "en_IN";
     const mid = MARKETPLACE_ID;
-
+    console.log("Product Information:", product);
     // ── Attaching to a known existing ASIN — offer only ──────────────
     if (product.suggestedAsin) {
         const attributes = {
