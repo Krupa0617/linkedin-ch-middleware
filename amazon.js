@@ -19,55 +19,33 @@ app.use(cors());
  ***********************************************************************/
 
 const {
-
-    //==================================================
-    // Sitecore Content Hub
-    //==================================================
-
     CONTENT_HUB_URL,
     CONTENT_HUB_USERNAME,
     CONTENT_HUB_PASSWORD,
     API_SECRET_KEY,
 
-    //==================================================
-    // Amazon Seller
-    //==================================================
-
     AMAZON_SELLER_ID = process.env.AMAZON_SELLER_ID,
     AMAZON_MARKETPLACE_ID = process.env.AMAZON_MARKETPLACE_ID,
 
-    //==================================================
-    // Login With Amazon
-    //==================================================
-
     LWA_CLIENT_ID = process.env.LWA_CLIENT_ID,
     LWA_CLIENT_SECRET = process.env.LWA_CLIENT_SECRET,
-    LWA_REFRESH_TOKEN =  process.env.LWA_REFRESH_TOKEN,
-
-    //==================================================
-    // Optional
-    //==================================================
+    LWA_REFRESH_TOKEN = process.env.LWA_REFRESH_TOKEN,
 
     AMAZON_ENV = "PRODUCTION"
 
 } = process.env;
 
 
-const IS_SANDBOX =
-    AMAZON_ENV === "SANDBOX";
+const IS_SANDBOX = AMAZON_ENV === "SANDBOX";
 
 /***********************************************************************
  * Amazon API VERSION
  ***********************************************************************/
 
 const AMAZON_API_VERSION = {
-
     LISTINGS: "2021-08-01",
-
     PRODUCT_TYPES: "2020-09-01",
-
     CATALOG: "2022-04-01"
-
 };
 
 /***********************************************************************
@@ -75,13 +53,9 @@ const AMAZON_API_VERSION = {
  ***********************************************************************/
 
 const AMAZON_ENDPOINTS = {
-
     NA: "https://sellingpartnerapi-na.amazon.com",
-
     EU: "https://sellingpartnerapi-eu.amazon.com",
-
     FE: "https://sellingpartnerapi-fe.amazon.com"
-
 };
 
 /***********************************************************************
@@ -89,23 +63,19 @@ const AMAZON_ENDPOINTS = {
  ***********************************************************************/
 
 const MARKETPLACES = {
-
     IN: {
-
-        id: AMAZON_MARKETPLACE_ID || MARKETPLACE_ID,
-
+        // NOTE: fixed — was `AMAZON_MARKETPLACE_ID || MARKETPLACE_ID`, which
+        // referenced MARKETPLACE_ID before it exists (TDZ). It only worked
+        // because AMAZON_MARKETPLACE_ID is truthy in your env, so the
+        // right-hand side was never evaluated. Still fragile — fixed properly.
+        id: AMAZON_MARKETPLACE_ID || "A21TJRUUN4KGV",
         endpoint: AMAZON_ENDPOINTS.EU,
-
         currency: "INR",
-
         language: "en_IN"
-
     }
-
 };
 
 const MARKETPLACE = MARKETPLACES.IN;
-
 const MARKETPLACE_ID = MARKETPLACE.id;
 
 const httpsAgent = new https.Agent({
@@ -113,265 +83,82 @@ const httpsAgent = new https.Agent({
     rejectUnauthorized: true
 });
 
-/***********************************************************************
- * Amazon API Base URL
- ***********************************************************************/
-
 const AMAZON_API = IS_SANDBOX
-?
-"https://sandbox.sellingpartnerapi-eu.amazon.com"
-:
-MARKETPLACE.endpoint;
+    ? "https://sandbox.sellingpartnerapi-eu.amazon.com"
+    : MARKETPLACE.endpoint;
 
-/***********************************************************************
- * Amazon HEADERS
- ***********************************************************************/
-const AMAZON_HEADERS = {
-
-    "user-agent":
-    "SitecoreContentHubAmazonConnector/1.0"
-
-};
-
-/***********************************************************************
- * Login With Amazon Endpoint
- ***********************************************************************/
-
-const LWA_ENDPOINT =
-    "https://api.amazon.com/auth/o2/token";
-
-/***********************************************************************
- * Cached Token
- ***********************************************************************/
+const LWA_ENDPOINT = "https://api.amazon.com/auth/o2/token";
 
 let amazonAccessToken = null;
-
 let amazonTokenExpiry = 0;
 
-/***********************************************************************
- * Retry Configuration
- ***********************************************************************/
-
 const MAX_RETRY = 3;
-
 const RETRY_DELAY = 2000;
 
-/***********************************************************************
- * Default Headers
- ***********************************************************************/
-
-const DEFAULT_HEADERS = {
-
-    "Content-Type": "application/json",
-
-    Accept: "application/json"
-
+const PRODUCT_TYPES = {
+    COSMETICS: "BEAUTY",
+    MEDICINE: "HEALTH_PERSONAL_CARE",
+    SKINCARE: "BEAUTY",
+    PERSONAL_CARE: "HEALTH_PERSONAL_CARE",
+    DEFAULT: "BEAUTY"
 };
 
-/***********************************************************************
- * Product Types
- ***********************************************************************/
-
-const PRODUCT_TYPES = {
-
-    COSMETICS: "BEAUTY",
-
-    MEDICINE: "HEALTH_PERSONAL_CARE",
-
-    SKINCARE: "BEAUTY",
-
-    PERSONAL_CARE: "HEALTH_PERSONAL_CARE",
-
-    DEFAULT: "BEAUTY"
-
-}
-
-/***********************************************************************
- * Utility
- ***********************************************************************/
-
 function sleep(ms) {
-
     return new Promise(resolve => setTimeout(resolve, ms));
-
-}
-
-function createRequestId() {
-
-    return crypto.randomUUID();
-
 }
 
 function log(title, data = "") {
-
-    console.log(
-
-        `[${new Date().toISOString()}]`,
-
-        title,
-
-        data
-
-    );
-
-}
-
-function getProductType(category) {
-
-    if (!category)
-        return PRODUCT_TYPES.DEFAULT;
-
-    const value =
-        category.toUpperCase();
-
-    if (value.includes("COSMETIC"))
-        return PRODUCT_TYPES.COSMETICS;
-
-    if (value.includes("MEDICINE"))
-        return PRODUCT_TYPES.MEDICINE;
-
-    if (value.includes("SKIN"))
-        return PRODUCT_TYPES.SKINCARE;
-
-    return PRODUCT_TYPES.DEFAULT;
-
+    console.log(`[${new Date().toISOString()}]`, title, data);
 }
 
 function logError(title, err) {
-
-    console.error(
-
-        `[${new Date().toISOString()}]`,
-
-        title,
-
-        err.response?.data || err.message
-
-    );
-
+    console.error(`[${new Date().toISOString()}]`, title, err.response?.data || err.message);
 }
 
 const requiredVariables = [
-    "CONTENT_HUB_URL",
-    "CONTENT_HUB_USERNAME",
-    "CONTENT_HUB_PASSWORD",
-    "API_SECRET_KEY",
-    "LWA_CLIENT_ID",
-    "LWA_CLIENT_SECRET",
-    "LWA_REFRESH_TOKEN",
-    "AMAZON_SELLER_ID",
-    "AMAZON_MARKETPLACE_ID"
+    "CONTENT_HUB_URL", "CONTENT_HUB_USERNAME", "CONTENT_HUB_PASSWORD", "API_SECRET_KEY",
+    "LWA_CLIENT_ID", "LWA_CLIENT_SECRET", "LWA_REFRESH_TOKEN", "AMAZON_SELLER_ID", "AMAZON_MARKETPLACE_ID"
 ];
 
-const missing = requiredVariables.filter(
-
-    key => !process.env[key]
-
-);
-
+const missing = requiredVariables.filter(key => !process.env[key]);
 if (missing.length > 0) {
-
-    console.warn("");
-
-    console.warn("====================================================");
-
-    console.warn("Missing Environment Variables");
-
-    console.warn(missing);
-
-    console.warn("====================================================");
-
-    console.warn("");
-
+    console.warn("\n====================================================");
+    console.warn("Missing Environment Variables", missing);
+    console.warn("====================================================\n");
 }
-
-/***********************************************************************
- * MIDDLEWARE: Verify API Key
- ***********************************************************************/
 
 function verifyApiKey(req, res, next) {
     const key = req.headers["x-api-key"];
     if (!key || key !== API_SECRET_KEY) {
-        return res.status(401).json({ 
-            error: "Unauthorized",
-            message: "Missing or invalid x-api-key header"
-        });
+        return res.status(401).json({ error: "Unauthorized", message: "Missing or invalid x-api-key header" });
     }
     next();
 }
 
-/***********************************************************************
- * HEALTH CHECK ENDPOINTS
- ***********************************************************************/
-
-// ✅ Simple health check (no auth required for testing connection)
 app.get("/health", (req, res) => {
-    res.status(200).json({
-        status: "ok",
-        service: "Amazon SP-API + Sitecore Content Hub Connector",
-        timestamp: new Date().toISOString()
-    });
+    res.status(200).json({ status: "ok", service: "Amazon SP-API + Sitecore Content Hub Connector", timestamp: new Date().toISOString() });
 });
 
-// ✅ Amazon health check endpoint
 app.get("/amazon/health", verifyApiKey, (req, res) => {
-    res.status(200).json({
-        status: "ok",
-        endpoint: "/amazon/publish",
-        method: "POST",
-        description: "Publishes a Content Hub product to Amazon",
-        timestamp: new Date().toISOString()
-    });
+    res.status(200).json({ status: "ok", endpoint: "/amazon/publish", method: "POST", timestamp: new Date().toISOString() });
 });
 
-// ✅ Amazon connection test (what Content Hub "Test Connection" calls)
 app.post("/amazon/", verifyApiKey, async (req, res) => {
     try {
         log("Received /amazon/ test request");
-        
-        // Test Content Hub connectivity
-        if (!CONTENT_HUB_URL) {
-            return res.status(400).json({
-                success: false,
-                error: "Content Hub URL not configured"
-            });
-        }
-
-        // Test Amazon authentication
+        if (!CONTENT_HUB_URL) return res.status(400).json({ success: false, error: "Content Hub URL not configured" });
         try {
             await getAmazonAccessToken();
         } catch (err) {
-            return res.status(500).json({
-                success: false,
-                error: "Amazon authentication failed",
-                message: err.message
-            });
+            return res.status(500).json({ success: false, error: "Amazon authentication failed", message: err.message });
         }
-
-        res.status(200).json({
-            success: true,
-            message: "Connection successful",
-            service: "Amazon SP-API Connector",
-            ready: true
-        });
+        res.status(200).json({ success: true, message: "Connection successful", ready: true });
     } catch (err) {
         logError("/amazon/ test failed", err);
-        res.status(500).json({
-            success: false,
-            error: "Connection test failed",
-            message: err.message
-        });
+        res.status(500).json({ success: false, error: "Connection test failed", message: err.message });
     }
 });
 
-/***********************************************************************
- * Content Hub Action: HEAD + POST /amazon/publish
- * HEAD: Connection test (Content Hub prerequisite check)
- * POST: Triggered from a Content Hub M.Action button on the Product entity
- * Also handles connection tests when target_id is not present
- ***********************************************************************/
-
-// HEAD request for connection test
 app.head("/amazon/publish", verifyApiKey, async (req, res) => {
     try {
         await getAmazonAccessToken(true);
@@ -382,354 +169,197 @@ app.head("/amazon/publish", verifyApiKey, async (req, res) => {
 });
 
 app.post("/amazon/publish", verifyApiKey, async (req, res) => {
-
-    // Content Hub sends the triggering entity's id via header
     const productId = req.headers.target_id;
-      const sourceSystem = req.headers['source_system'] || CONTENT_HUB_URL;
+    const sourceSystem = req.headers['source_system'] || CONTENT_HUB_URL;
+    // NOTE: still flagging — sourceSystem from a header means anyone who has
+    // your x-api-key can redirect where your Content Hub credentials get
+    // POSTed. Worth allowlisting to CONTENT_HUB_URL only when you get a
+    // chance, separate from the current listing issue.
 
-    log("Received /amazon/publish request", { productId, headers: req.headers });
+    log("Received /amazon/publish request", { productId });
 
-    // ═══════════════════════════════════════════════════════════════
-    // HANDLE: Connection Test (no productId = Content Hub test)
-    // ═══════════════════════════════════════════════════════════════
     if (!productId) {
-        log("Connection test request - validating Amazon connectivity");
-        
-      
         try {
-          
-            // Test Amazon authentication
             await getAmazonAccessToken();
-            
-            log("✅ Connection test passed");
-            return res.status(200).json({
-                success: true,
-                message: "Connection test successful",
-                service: "Amazon SP-API Connector",
-                ready: true
-            });
+            return res.status(200).json({ success: true, message: "Connection test successful", ready: true });
         } catch (err) {
             logError("Connection test failed - Amazon auth error", err);
-            return res.status(500).json({
-                success: false,
-                error: "Amazon authentication failed",
-                message: err.message
-            });
+            return res.status(500).json({ success: false, error: "Amazon authentication failed", message: err.message });
         }
     }
-      const chToken = await getContentHubToken(sourceSystem);
-    if (!chToken) {
-      return res.status(500).json({ error: 'Content Hub auth failed' });
-    }
-      const entity = await getEntity(productId, sourceSystem, chToken);
-    const definitionName = extractDefinitionName(entity);
-    console.log(`✅ Definition: ${definitionName}`);
 
-    if (!definitionName) {
-      return res.status(400).json({ error: 'Could not extract definition name from entity' });
-    }
-
-  
-    // ═══════════════════════════════════════════════════════════════
-    // HANDLE: Actual Product Sync (productId present)
-    // ═══════════════════════════════════════════════════════════════
     try {
-        let result;
-    if (definitionName === 'M.PCM.Product') {
-      result = await syncProductToAmazon(productId);
-    } else if (definitionName === 'M.Asset') {
-      result = await handleAssetPush(productId);
-    } else {
-      return res.status(400).json({
-        error: `Unsupported entity type: ${definitionName}`
-      });
-    }
-       // const result = await syncProductToAmazon(productId);
+        const chToken = await getContentHubToken(sourceSystem);
+        if (!chToken) return res.status(500).json({ error: 'Content Hub auth failed' });
 
-        res.status(200).json({
-            success: true,
-            message: `Product ${productId} published to Amazon`,
-            result
-        });
+        const entity = await getEntity(productId, sourceSystem, chToken);
+        const definitionName = extractDefinitionName(entity);
+        log(`Definition: ${definitionName}`);
+
+        if (!definitionName) {
+            return res.status(400).json({ error: 'Could not extract definition name from entity' });
+        }
+
+        let result;
+        if (definitionName === 'M.PCM.Product') {
+            result = await syncProductToAmazon(productId);
+        } else if (definitionName === 'M.Asset') {
+            result = await handleAssetPush(productId);
+        } else {
+            return res.status(400).json({ error: `Unsupported entity type: ${definitionName}` });
+        }
+
+        // Surface Amazon-side rejections as failures instead of masking as 200 success.
+        if (result?.amazon?.status === "INVALID" || result?.amazon?.status === "REJECTED") {
+            return res.status(422).json({
+                success: false,
+                message: `Amazon rejected the listing for product ${productId}`,
+                issues: result.amazon.issues,
+                result
+            });
+        }
+
+        res.status(200).json({ success: true, message: `Product ${productId} published to Amazon`, result });
 
     } catch (err) {
         logError(`/amazon/publish failed for product ${productId}`, err);
-
-        res.status(500).json({
-            success: false,
-            error: err.response?.data || err.message
-        });
+        res.status(500).json({ success: false, error: err.response?.data || err.message });
     }
 });
 
+// ─────────────────────────────────────────────
+// Content Hub helpers (unchanged)
+// ─────────────────────────────────────────────
 
-// ─────────────────────────────────────────────
-// Helper: Authenticate with Content Hub
-// ─────────────────────────────────────────────
 async function getContentHubToken(contentHubBaseUrl) {
-  try {
-    console.log('🔐 Authenticating with Content Hub...');
-    const response = await axios.post(
-      `${contentHubBaseUrl}/api/authenticate`,
-      {
-        user_name: CONTENT_HUB_USERNAME,
-        password: CONTENT_HUB_PASSWORD
-      },
-      { headers: { 'Content-Type': 'application/json' } }
-    );
-
-    const token = response.data.token || response.data.access_token || response.data;
-    if (typeof token !== 'string' || token.trim().length === 0) {
-      console.error('❌ Token extraction failed:', JSON.stringify(response.data));
-      return null;
+    try {
+        const response = await axios.post(
+            `${contentHubBaseUrl}/api/authenticate`,
+            { user_name: CONTENT_HUB_USERNAME, password: CONTENT_HUB_PASSWORD },
+            { headers: { 'Content-Type': 'application/json' } }
+        );
+        const token = response.data.token || response.data.access_token || response.data;
+        if (typeof token !== 'string' || token.trim().length === 0) return null;
+        return token;
+    } catch (err) {
+        console.error('❌ Content Hub auth failed:', err.response?.status, err.message);
+        return null;
     }
-
-    console.log('✅ Content Hub token obtained, length:', token.length);
-    return token;
-  } catch (err) {
-    console.error('❌ Content Hub auth failed:', err.response?.status, err.message);
-    return null;
-  }
 }
 
-// ─────────────────────────────────────────────
-// Helper: Fetch a Content Hub entity
-// ─────────────────────────────────────────────
 async function getEntity(entityId, contentHubBaseUrl, token) {
-  const response = await axios.get(
-    `${contentHubBaseUrl}/api/entities/${entityId}`,
-    { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' } }
-  );
-  return response.data;
-}
-
-// ─────────────────────────────────────────────
-// Helper: Extract definition name from entity
-// ─────────────────────────────────────────────
-function extractDefinitionName(entity) {
-  if (!entity?.entitydefinition?.href) {
-    return null;
-  }
-  const href = entity.entitydefinition.href;
-  const match = href.match(/\/entitydefinitions\/(.+?)($|\/)/);
-  return match ? match[1] : null;
-}
-
-// ─────────────────────────────────────────────
-// Helper: Get image URL + title from an Asset
-// ─────────────────────────────────────────────
-function extractAssetImage(entity) {
-  const props = entity?.properties || {};
-  const title = props.Title || props.FileName || entity?.identifier || null;
-
-  let imageUrl = null;
-  const renditions = entity?.renditions;
-  if (renditions && typeof renditions === 'object') {
-    imageUrl = renditions.downloadOriginal?.[0]?.href
-      || renditions.downloadOriginal?.[0]?.url
-      || null;
-  }
-
-  return { title, imageUrl };
-}
-
-// ─────────────────────────────────────────────
-// FIX #2: Fetch related assets using Content Hub Query API
-// ─────────────────────────────────────────────
-async function getRelatedAssets(productId, contentHubBaseUrl, token) {
-  try {
-    console.log(`📸 Fetching related assets for product ${productId}`);
-
-    const query = `Definition.Name=='M.Asset' AND Parent('PCMProductToAsset').id==${productId}`;
-    console.log(`   📋 Query: ${query}`);
-
     const response = await axios.get(
-      `${contentHubBaseUrl}/api/entities/query`,
-      {
-        params: { query },
-        headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' },
-        timeout: 10000
-      }
+        `${contentHubBaseUrl}/api/entities/${entityId}`,
+        { headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' } }
     );
-
-    const assetEntities = response.data?.items || [];
-    console.log(`   ✅ Query returned ${assetEntities.length} assets`);
-
-    if (assetEntities.length === 0) {
-      console.log(`   ⚠️  No assets found for product ${productId}`);
-      return [];
-    }
-
-    const imageAssets = [];
-    for (let i = 0; i < assetEntities.length; i++) {
-      try {
-        const asset = assetEntities[i];
-        const { title, imageUrl } = extractAssetImage(asset);
-
-        if (imageUrl) {
-          console.log(`   Asset #${i}: ${asset.identifier} ✅`);
-          imageAssets.push({ id: asset.id, title, imageUrl });
-        } else {
-          console.log(`   Asset #${i}: ${asset.identifier} (no image rendition) ⚠️`);
-        }
-      } catch (err) {
-        console.warn(`   Asset #${i}: Error processing -`, err.message.slice(0, 80));
-      }
-    }
-
-    if (imageAssets.length === 0) {
-      console.log(`   ⚠️  No usable image URLs found in ${assetEntities.length} asset(s)`);
-    } else {
-      console.log(`   ✅ Successfully retrieved ${imageAssets.length} asset image(s)`);
-    }
-
-    return imageAssets;
-  } catch (err) {
-    console.error('❌ Asset query error:', err.message);
-    return [];
-  }
+    return response.data;
 }
 
+function extractDefinitionName(entity) {
+    if (!entity?.entitydefinition?.href) return null;
+    const match = entity.entitydefinition.href.match(/\/entitydefinitions\/(.+?)($|\/)/);
+    return match ? match[1] : null;
+}
+
+function extractAssetImage(entity) {
+    const props = entity?.properties || {};
+    const title = props.Title || props.FileName || entity?.identifier || null;
+    let imageUrl = null;
+    const renditions = entity?.renditions;
+    if (renditions && typeof renditions === 'object') {
+        imageUrl = renditions.downloadOriginal?.[0]?.href || renditions.downloadOriginal?.[0]?.url || null;
+    }
+    return { title, imageUrl };
+}
+
+async function getRelatedAssets(productId, contentHubBaseUrl, token) {
+    try {
+        const query = `Definition.Name=='M.Asset' AND Parent('PCMProductToAsset').id==${productId}`;
+        const response = await axios.get(`${contentHubBaseUrl}/api/entities/query`, {
+            params: { query },
+            headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' },
+            timeout: 10000
+        });
+        const assetEntities = response.data?.items || [];
+        if (assetEntities.length === 0) return [];
+
+        const imageAssets = [];
+        for (const asset of assetEntities) {
+            const { title, imageUrl } = extractAssetImage(asset);
+            if (imageUrl) imageAssets.push({ id: asset.id, title, imageUrl });
+        }
+        return imageAssets;
+    } catch (err) {
+        console.error('❌ Asset query error:', err.message);
+        return [];
+    }
+}
 
 /***********************************************************************
  * Amazon Login With Amazon Authentication
  ***********************************************************************/
 
 async function getAmazonAccessToken(forceRefresh = false) {
-
     try {
-
-        //---------------------------------------------------------
-        // Return cached token
-        //---------------------------------------------------------
-
-        if (
-            !forceRefresh &&
-            amazonAccessToken &&
-            Date.now() < amazonTokenExpiry
-        ) {
-
+        if (!forceRefresh && amazonAccessToken && Date.now() < amazonTokenExpiry) {
             return amazonAccessToken;
-
         }
-
-
-        log("Requesting Amazon Access Token...");
-
-        //---------------------------------------------------------
-        // Exchange Refresh Token
-        //---------------------------------------------------------
-
         const response = await axios.post(
-            
             LWA_ENDPOINT,
-
             new URLSearchParams({
-
                 grant_type: "refresh_token",
-
                 refresh_token: LWA_REFRESH_TOKEN,
-
                 client_id: LWA_CLIENT_ID,
-
                 client_secret: LWA_CLIENT_SECRET
-
             }),
-
-            {
-                httpsAgent,
-                headers: {
-
-                    "Content-Type":
-                        "application/x-www-form-urlencoded"
-
-                },
-
-                timeout: 30000
-
-            }
-
+            { httpsAgent, headers: { "Content-Type": "application/x-www-form-urlencoded" }, timeout: 30000 }
         );
-        console.log(response.data);
-        //---------------------------------------------------------
-        // Save Token
-        //---------------------------------------------------------
-
         amazonAccessToken = response.data.access_token;
-
-        const expiresIn =
-            response.data.expires_in || 3600;
-
-        amazonTokenExpiry =
-            Date.now() + ((expiresIn - 60) * 1000);
-
-        log("Amazon Access Token Generated");
-
+        const expiresIn = response.data.expires_in || 3600;
+        amazonTokenExpiry = Date.now() + ((expiresIn - 60) * 1000);
         return amazonAccessToken;
-
-    }
-
-    catch (err) {
-
-        logError(
-
-            "Unable to generate Amazon Access Token",
-
-            err
-
-        );
-
+    } catch (err) {
+        logError("Unable to generate Amazon Access Token", err);
         throw err;
-
     }
-
 }
 
 async function callAmazonAPI({ method, path, params = {}, data = null }) {
     let attempt = 0;
-    console.log(`Calling Amazon API: ${AMAZON_API}  ${method.toUpperCase()} ${path} (attempt ${attempt + 1}/${MAX_RETRY})`);
     while (attempt < MAX_RETRY) {
         try {
-            const accessToken = await getAmazonAccessToken();//LWA_REFRESH_TOKEN;
-
+            const accessToken = await getAmazonAccessToken();
+            log(`Calling Amazon API: ${method.toUpperCase()} ${path} (attempt ${attempt + 1}/${MAX_RETRY})`);
             const response = await axios({
                 method,
                 url: `${AMAZON_API}${path}`,
                 params,
                 data,
                 httpsAgent,
-              headers: {
-                  Accept: "application/json",
-                  "Content-Type": "application/json",
-                  "x-amz-access-token": accessToken,
-                  Authorization: `Bearer ${accessToken}`
-              },
+                headers: {
+                    Accept: "application/json",
+                    "Content-Type": "application/json",
+                    "x-amz-access-token": accessToken,
+                    Authorization: `Bearer ${accessToken}`
+                },
                 timeout: 30000
             });
-
             return response.data;
-
         } catch (err) {
             attempt++;
             const status = err.response?.status;
-
             if (status === 401) {
-                log("Access token expired, refreshing...");
                 await getAmazonAccessToken(true);
                 continue;
             }
-
             if (status === 429 && attempt < MAX_RETRY) {
-                log(`Rate limited. Retrying in ${RETRY_DELAY}ms (attempt ${attempt}/${MAX_RETRY})`);
                 await sleep(RETRY_DELAY * attempt);
                 continue;
             }
-
-            if (attempt >= MAX_RETRY) {
-                logError(`Amazon API call failed after ${MAX_RETRY} attempts`, err);
+            if ((status === 400 || status === 422) || attempt >= MAX_RETRY) {
+                logError(`Amazon API call failed`, err);
                 throw err;
             }
-
             await sleep(RETRY_DELAY);
         }
     }
@@ -746,15 +376,9 @@ async function getProductEntity(productId, contentHubBaseUrl, token) {
         definitionName,
         sku: props.SKU || props.ProductSKU || entity.identifier,
         title: props.Title || props.ProductName || "",
-        productType:props.ProductType,
+        productType: props.ProductType,
         description: props.Description || props.LongDescription || "",
-        bulletPoints: [
-            props.BulletPoint1,
-            props.BulletPoint2,
-            props.BulletPoint3,
-            props.BulletPoint4,
-            props.BulletPoint5
-        ].filter(Boolean),
+        bulletPoints: [props.BulletPoint1, props.BulletPoint2, props.BulletPoint3, props.BulletPoint4, props.BulletPoint5].filter(Boolean),
         brand: props.Brand || "",
         category: props.Category || props.ProductCategory || "",
         price: props.Price || props.ListPrice || null,
@@ -762,361 +386,51 @@ async function getProductEntity(productId, contentHubBaseUrl, token) {
     };
 }
 
+/***********************************************************************
+ * FIXED: buildListingPayload — offer-only mode
+ *
+ * This product (galactosure) is confirmed the same physical product as
+ * the existing ASIN B0FQCL31HV. All 13 errors from the last log
+ * (Item Weight Unit, Unit Count, fssai_veg_non_veg_status, dimension
+ * units, Fulfillment Center Shelf Life, External Product ID/Information,
+ * Product Expiration Type, Merchant Suggested ASIN) were all "new
+ * catalog product" requirements — none of them apply once you tell
+ * Amazon you're only submitting an OFFER against an EXISTING ASIN.
+ ***********************************************************************/
+
 function buildListingPayload(product, images = []) {
     const productType = "NUTRITIONAL_SUPPLEMENT";
- 
- const lang = "en_IN"
- const attributes = {
-    // =====================================================
-    // PRODUCT IDENTITY
-    // =====================================================
+    const requirements = "LISTING_OFFER_ONLY";
 
-    item_name: [
-      {
-        value: product.title,
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
+    const attributes = {
+        // Tells Amazon which existing catalog product this offer is for —
+        // required because there's no GTIN to match by.
+        merchant_suggested_asin: [
+            { value: "B0FQCL31HV", marketplace_id: MARKETPLACE_ID }
+        ],
 
-    brand: [
-      {
-        value: "Himalaya",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
+        condition_type: [
+            { value: "new_new", marketplace_id: MARKETPLACE_ID }
+        ],
 
-    manufacturer: [
-      {
-        value: "Himalaya Wellness Company",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
+        fulfillment_availability: [{
+            fulfillment_channel_code: "DEFAULT",
+            quantity: product.quantity ?? 10,
+            marketplace_id: MARKETPLACE_ID
+        }]
+    };
 
-    model_number: [
-      {
-        value: "GALACTOSURE-200G",
-		language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
+    if (product.price) {
+        attributes.list_price = [{
+            value: Number(product.price),
+            currency: "INR",
+            marketplace_id: MARKETPLACE_ID
+        }];
+    }
 
-    // IMPORTANT:
-    // Add this only after confirming the exact schema structure
-    // and using the real EAN/UPC.
-    //
-    // externally_assigned_product_identifier: [
-    //   {
-    //     value: product.ean,
-    //     type: "EAN",
-    //     marketplace_id: MARKETPLACE_ID
-    //   }
-    // ],
-
-    // Only use if Amazon confirms this product already exists
-    // under this ASIN.
-    //
-    // merchant_suggested_asin: [
-    //   {
-    //     value: product.asin,
-    //     marketplace_id: MARKETPLACE_ID
-    //   }
-    // ],
-
-
-    // =====================================================
-    // PRODUCT DETAILS
-    // =====================================================
-
-    product_description: [
-      {
-        value:
-          "Himalaya Galactosure is a lactation supplement containing Shatavari, Moringa and Saffron.",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    bullet_point: [
-      {
-        value: "Triple action lactation support with Shatavari and Saffron",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      },
-      {
-        value: "Contains Shatavari, Moringa (Shigru), and Saffron",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      },
-      {
-        value: "200 g pack with Elaichi flavour",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    generic_keyword: [
-      {
-        value:
-          "galactosure lactation shatavari moringa saffron",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    flavor: [
-      {
-        value: "Elaichi",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    item_form: [
-      {
-        value: "Granules",
-		language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    number_of_items: [
-      {
-        value: 1,
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    item_package_quantity: [
-      {
-        value: 1,
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    part_number: [
-      {
-        value: "GALACTOSURE-200G",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    ingredients: [
-      {
-        value:
-          "Shatavari (Asparagus racemosus), Shigru (Moringa oleifera), Saffron (Crocus sativus)",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    special_ingredients: [
-      {
-        value:
-          "Shatavari, Shigru (Moringa oleifera), Saffron",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    serving_recommendation: [
-      {
-        value:
-          "2 scoops (10 g) twice daily with one glass of milk, or as directed on the product packaging.",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    item_type_name: [
-      {
-        value: "Lactation Supplement",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    contains_food_or_beverage: [
-      {
-        value: false,
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    is_heat_sensitive: [
-      {
-        value: false,
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    is_expiration_dated_product: [
-      {
-        value: true,
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    fssai_veg_non_veg_status: [
-      {
-        value: "VEGETARIAN",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    packer_contact_information: [
-      {
-        value:
-          "Himalaya Wellness Company, Makali, Bengaluru - 562162, Karnataka, India",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    rtip_manufacturer_contact_information: [
-      {
-        value:
-          "Himalaya Wellness Company, Makali, Bengaluru - 562162, Karnataka, India",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-
-    // =====================================================
-    // SAFETY / COMPLIANCE
-    // =====================================================
-
-    country_of_origin: [
-      {
-        value: "IN",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    contains_liquid_contents: [
-      {
-        value: false,
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-
-    // =====================================================
-    // SHIPPING
-    // =====================================================
-
-    item_dimensions: [
-      {
-        height: {
-          value: 10,
-          unit: "CM"
-        },
-        length: {
-          value: 10,
-          unit: "CM"
-        },
-        width: {
-          value: 10,
-          unit: "CM"
-        },
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    item_package_dimensions: [
-      {
-        height: {
-          value: 15,
-          unit: "CM"
-        },
-        length: {
-          value: 10,
-          unit: "CM"
-        },
-        width: {
-          value: 10,
-          unit: "CM"
-        },
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    // DO NOT use "grams" here.
-    // Exact unit enum must come from the schema.
-    //
-    // item_weight: [
-    //   {
-    //     value: 200,
-    //     unit: "<SCHEMA_VALUE>",
-    //     marketplace_id: MARKETPLACE_ID
-    //   }
-    // ],
-
-    // item_package_weight: [
-    //   {
-    //     value: 220,
-    //     unit: "<SCHEMA_VALUE>",
-    //     marketplace_id: MARKETPLACE_ID
-    //   }
-    // ],
-
-
-    // =====================================================
-    // UNIT COUNT
-    // =====================================================
-
-    // DO NOT use "count".
-    // Exact type must come from schema.
-    //
-    // unit_count: [
-    //   {
-    //     value: 200,
-    //     type: "<SCHEMA_VALUE>",
-    //     marketplace_id: MARKETPLACE_ID
-    //   }
-    // ],
-
-
-    // =====================================================
-    // OFFER
-    // =====================================================
-
-    condition_type: [
-      {
-        value: "new_new",
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    fulfillment_availability: [
-      {
-        fulfillment_channel_code: "DEFAULT",
-        quantity: product.quantity ?? 10,
-        marketplace_id: MARKETPLACE_ID,
-        language_tag: lang,
-      }
-    ]
-  };
-
+    // Offer images are optional in offer-only mode.
     images.forEach((img, index) => {
-        const key = index === 0
-            ? "main_product_image_locator"
-            : `other_product_image_locator_${index}`;
-
+        const key = index === 0 ? "main_offer_image_locator" : `other_offer_image_locator_${index}`;
         attributes[key] = [{ media_location: img.imageUrl, marketplace_id: MARKETPLACE_ID }];
     });
 
@@ -1124,169 +438,84 @@ function buildListingPayload(product, images = []) {
         if (attributes[key] === undefined) delete attributes[key];
     });
 
-    return { productType, attributes };
+    return { productType, requirements, attributes };
 }
 
 async function pushListingToAmazon(sku, payload) {
     const path = `/listings/${AMAZON_API_VERSION.LISTINGS}/items/${AMAZON_SELLER_ID}/${encodeURIComponent(sku)}`;
 
-    log(`Pushing listing to Amazon: ${sku}`);
+    log(`Pushing OFFER-ONLY listing to Amazon: ${sku}`);
 
     const result = await callAmazonAPI({
         method: "put",
         path,
-        params: { marketplaceIds: MARKETPLACE_ID },
+        params: {
+            marketplaceIds: MARKETPLACE_ID,
+            issueLocale: "en_IN"
+        },
         data: {
             productType: payload.productType,
+            requirements: payload.requirements, // <-- key fix
             attributes: payload.attributes
         }
     });
 
     log("Amazon listing response", result);
+    if (result?.issues?.length) {
+        log(`⚠️ ${result.issues.length} issue(s) for ${sku}`, result.issues);
+    }
     return result;
 }
 
 async function syncProductToAmazon(productId) {
     const contentHubToken = await getContentHubToken(CONTENT_HUB_URL);
-    if (!contentHubToken) {
-        throw new Error("Failed to authenticate with Content Hub");
-    }
+    if (!contentHubToken) throw new Error("Failed to authenticate with Content Hub");
 
     const product = await getProductEntity(productId, CONTENT_HUB_URL, contentHubToken);
     const images = await getRelatedAssets(productId, CONTENT_HUB_URL, contentHubToken);
     const payload = buildListingPayload(product, images);
     const amazonResult = await pushListingToAmazon(product.sku, payload);
 
-    return {
-        productId,
-        sku: product.sku,
-        imagesFound: images.length,
-        amazon: amazonResult
-    };
+    return { productId, sku: product.sku, imagesFound: images.length, amazon: amazonResult };
 }
 
-// ─────────────────────────────────────────────
-// Handle asset creation/update
-// ─────────────────────────────────────────────
 async function handleAssetPush(productId) {
-const contentHubToken = await getContentHubToken(CONTENT_HUB_URL);
-    if (!contentHubToken) {
-        throw new Error("Failed to authenticate with Content Hub");
-    }
-    //------------------------------------------------------
-    // Fetch Asset
-    //------------------------------------------------------
+    const contentHubToken = await getContentHubToken(CONTENT_HUB_URL);
+    if (!contentHubToken) throw new Error("Failed to authenticate with Content Hub");
 
-    const asset = await getEntity(
-        productId,
-        CONTENT_HUB_URL,
-        contentHubToken
-    );
-
+    const asset = await getEntity(productId, CONTENT_HUB_URL, contentHubToken);
     const { title, imageUrl } = extractAssetImage(asset);
-
-    if (!imageUrl) {
-        throw new Error("Asset has no usable image.");
-    }
+    if (!imageUrl) throw new Error("Asset has no usable image.");
 
     const sku = `hima${productId}`;
-
-    console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    console.log("Asset :", title);
-    console.log("SKU   :", sku);
-    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-
-    //------------------------------------------------------
-    // Description
-    //------------------------------------------------------
-
     let description = "";
-
     const desc = asset.properties?.Description;
-
-    if (typeof desc === "string") {
-
-        description = desc;
-
-    } else if (desc && typeof desc === "object") {
-
-        description =
-            desc["en-US"] ||
-            Object.values(desc)[0] ||
-            "";
-
-    }
-
-    //------------------------------------------------------
-    // Build Amazon Payload
-    //------------------------------------------------------
+    if (typeof desc === "string") description = desc;
+    else if (desc && typeof desc === "object") description = desc["en-US"] || Object.values(desc)[0] || "";
 
     const payload = {
-
         productType: PRODUCT_TYPES.DEFAULT,
-
         attributes: {
-
-            item_name: [{
-                value: title,
-                marketplace_id: MARKETPLACE_ID
-            }],
-
-            brand: [{
-                value: "Himalaya Wellness",
-                marketplace_id: MARKETPLACE_ID
-            }],
-
-            product_description: [{
-                value: description,
-                marketplace_id: MARKETPLACE_ID
-            }],
-
-            main_product_image_locator: [{
-                media_location: imageUrl,
-                marketplace_id: MARKETPLACE_ID
-            }]
+            item_name: [{ value: title, marketplace_id: MARKETPLACE_ID }],
+            brand: [{ value: "Himalaya Wellness", marketplace_id: MARKETPLACE_ID }],
+            product_description: [{ value: description, marketplace_id: MARKETPLACE_ID }],
+            main_product_image_locator: [{ media_location: imageUrl, marketplace_id: MARKETPLACE_ID }]
         }
-
     };
 
-    //------------------------------------------------------
-    // Push Listing
-    //------------------------------------------------------
-
-    const amazonResult =
-        await pushListingToAmazon(sku, payload);
-
-    console.log("Amazon Response", amazonResult);
-
-       return {
-        entityType: "Asset",
-        productId,
-        sku,
-        title,
-        amazonResult
-    };
-
+    const amazonResult = await pushListingToAmazon(sku, payload);
+    return { entityType: "Asset", productId, sku, title, amazonResult };
 }
-
 
 app.post("/sync-product/:productId", verifyApiKey, async (req, res) => {
     const { productId } = req.params;
-
     try {
         const result = await syncProductToAmazon(productId);
         res.status(200).json({ success: true, result });
     } catch (err) {
         logError(`Sync failed for product ${productId}`, err);
-        res.status(500).json({
-            success: false,
-            error: err.response?.data || err.message
-        });
+        res.status(500).json({ success: false, error: err.response?.data || err.message });
     }
 });
-
-/***********************************************************************
- * Export for Vercel
- ***********************************************************************/
 
 export default app;
