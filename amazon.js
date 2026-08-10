@@ -487,11 +487,11 @@ function buildListingPayload(product, images = []) {
         manufacturer: [{ value: product.manufacturer, language_tag: lang, marketplace_id: mid }],
         model_number: [{ value: product.sku, language_tag: lang, marketplace_id: mid }],
         part_number: [{ value: product.sku, language_tag: lang, marketplace_id: mid }],
-        product_expiration_type: [  { value: "None", language_tag: lang,marketplace_id: MARKETPLACE_ID }],
+       // product_expiration_type: [  { value: "None", language_tag: lang,marketplace_id: MARKETPLACE_ID }],
        external_product_information: [  {
-    entity: [
-      { value: product.gtin || "1", type: product.gtinType || "EAN" }
-    ],language_tag: lang,
+    value: product.gtin || "N/A",
+    type: product.gtinType || "EAN",
+    language_tag: lang,
     marketplace_id: MARKETPLACE_ID
   }],
         product_description: [{ value: product.description, language_tag: lang, marketplace_id: mid }],
@@ -584,7 +584,7 @@ function buildListingPayload(product, images = []) {
             }];
         }
 
-    unit_count: [{
+    attributes.unit_count= [{
     value: 1,
     type: "count",
     language_tag: lang,
