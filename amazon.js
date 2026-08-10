@@ -764,8 +764,9 @@ async function getProductEntity(productId, contentHubBaseUrl, token) {
 
 function buildListingPayload(product, images = []) {
     const productType = "NUTRITIONAL_SUPPLEMENT";
-const lang = "en_IN";
-    const attributes = {
+ 
+ const lang = "en_IN"
+ const attributes = {
     // =====================================================
     // PRODUCT IDENTITY
     // =====================================================
@@ -797,6 +798,7 @@ const lang = "en_IN";
     model_number: [
       {
         value: "GALACTOSURE-200G",
+		language_tag: lang,
         marketplace_id: MARKETPLACE_ID
       }
     ],
@@ -875,6 +877,7 @@ const lang = "en_IN";
     item_form: [
       {
         value: "Granules",
+		language_tag: lang,
         marketplace_id: MARKETPLACE_ID
       }
     ],
@@ -882,6 +885,7 @@ const lang = "en_IN";
     number_of_items: [
       {
         value: 1,
+        language_tag: lang,
         marketplace_id: MARKETPLACE_ID
       }
     ],
@@ -889,6 +893,7 @@ const lang = "en_IN";
     item_package_quantity: [
       {
         value: 1,
+        language_tag: lang,
         marketplace_id: MARKETPLACE_ID
       }
     ],
@@ -896,6 +901,7 @@ const lang = "en_IN";
     part_number: [
       {
         value: "GALACTOSURE-200G",
+        language_tag: lang,
         marketplace_id: MARKETPLACE_ID
       }
     ],
@@ -938,6 +944,7 @@ const lang = "en_IN";
     contains_food_or_beverage: [
       {
         value: false,
+        language_tag: lang,
         marketplace_id: MARKETPLACE_ID
       }
     ],
@@ -945,6 +952,7 @@ const lang = "en_IN";
     is_heat_sensitive: [
       {
         value: false,
+        language_tag: lang,
         marketplace_id: MARKETPLACE_ID
       }
     ],
@@ -952,6 +960,7 @@ const lang = "en_IN";
     is_expiration_dated_product: [
       {
         value: true,
+        language_tag: lang,
         marketplace_id: MARKETPLACE_ID
       }
     ],
@@ -959,6 +968,7 @@ const lang = "en_IN";
     fssai_veg_non_veg_status: [
       {
         value: "VEGETARIAN",
+        language_tag: lang,
         marketplace_id: MARKETPLACE_ID
       }
     ],
@@ -989,6 +999,7 @@ const lang = "en_IN";
     country_of_origin: [
       {
         value: "IN",
+        language_tag: lang,
         marketplace_id: MARKETPLACE_ID
       }
     ],
@@ -996,6 +1007,7 @@ const lang = "en_IN";
     contains_liquid_contents: [
       {
         value: false,
+        language_tag: lang,
         marketplace_id: MARKETPLACE_ID
       }
     ],
@@ -1019,6 +1031,7 @@ const lang = "en_IN";
           value: 10,
           unit: "CM"
         },
+        language_tag: lang,
         marketplace_id: MARKETPLACE_ID
       }
     ],
@@ -1037,6 +1050,7 @@ const lang = "en_IN";
           value: 10,
           unit: "CM"
         },
+        language_tag: lang,
         marketplace_id: MARKETPLACE_ID
       }
     ],
@@ -1092,7 +1106,8 @@ const lang = "en_IN";
       {
         fulfillment_channel_code: "DEFAULT",
         quantity: product.quantity ?? 10,
-        marketplace_id: MARKETPLACE_ID
+        marketplace_id: MARKETPLACE_ID,
+        language_tag: lang,
       }
     ]
   };
