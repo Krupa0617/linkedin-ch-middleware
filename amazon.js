@@ -763,7 +763,7 @@ async function getProductEntity(productId, contentHubBaseUrl, token) {
 }
 
 function buildListingPayload(product, images = []) {
-    const productType = product.productType;
+    const productType = "BABY_PRODUCT";
 
     const attributes = {
         item_name: [{ value: product.title,  language_tag: "en_IN", marketplace_id: MARKETPLACE_ID }],
