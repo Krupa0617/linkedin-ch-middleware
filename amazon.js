@@ -488,9 +488,9 @@ function buildListingPayload(product, images = []) {
         model_number: [{ value: product.sku, language_tag: lang, marketplace_id: mid }],
         part_number: [{ value: product.sku, language_tag: lang, marketplace_id: mid }],
         product_expiration_type: [  { value: "None", language_tag: lang,marketplace_id: MARKETPLACE_ID }],
-       external_product_information: [ {
+       external_product_information: [  {
     entity: [
-      { value: product.gtin || "N/A", type: product.gtinType || "EAN" }
+      { value: product.gtin || "1", type: product.gtinType || "EAN" }
     ],language_tag: lang,
     marketplace_id: MARKETPLACE_ID
   }],
@@ -518,7 +518,7 @@ function buildListingPayload(product, images = []) {
 
         contains_food_or_beverage: [{ value: !!product.containsFoodOrBeverage,language_tag: lang, marketplace_id: mid }],
         is_heat_sensitive: [{ value: !!product.isHeatSensitive, language_tag: lang,marketplace_id: mid }],
-        is_expiration_dated_product: [{ value: !!product.isExpirationDated, language_tag: lang, marketplace_id: mid }],
+        is_expiration_dated_product: [{ value: false, language_tag: lang, marketplace_id: mid }],
         // product_expiration_type intentionally omitted — see note below.
         fssai_veg_non_veg_status: [{ value: product.vegStatus, language_tag: lang,marketplace_id: mid }], // this one stopped erroring, likely correct now
         fc_shelf_life: [{ value: product.shelfLifeMonths, unit: "months", language_tag: lang,marketplace_id: mid }], // verify unit enum
@@ -584,13 +584,11 @@ function buildListingPayload(product, images = []) {
             }];
         }
 
-    attributes.unit_count = [{
-        value: withFallback(product.unitCountValue, 200, "UnitCountValue"),
-        type: "grams", // still unverified — check schema
-        language_tag: lang,
-        marketplace_id: mid
-    }];
-    
+    unit_count: [{
+    value: 1,
+    type: "count",
+    language_tag: lang,
+    marketplace_id: mid}];
 
     const d = product.dimensionsCm;
     attributes.item_dimensions = [{
