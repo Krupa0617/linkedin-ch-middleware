@@ -488,12 +488,11 @@ function buildListingPayload(product, images = []) {
         model_number: [{ value: product.sku, language_tag: lang, marketplace_id: mid }],
         part_number: [{ value: product.sku, language_tag: lang, marketplace_id: mid }],
        // product_expiration_type: [  { value: "None", language_tag: lang,marketplace_id: MARKETPLACE_ID }],
-        // external_product_information: [{
-        //     value: "B0FQCL31HV",
-        //     entity: "HSN",
-        //     key:"sku",
-        //     marketplace_id: MARKETPLACE_ID
-        // }],
+        external_product_information: [{
+            value: Math.floor(Math.log10(product.id)) + 1 < 6 ? Number("0" + product.id) : product.id,
+            entity: "HSN",
+            marketplace_id: MARKETPLACE_ID
+        }],
         product_description: [{ value: product.description, language_tag: lang, marketplace_id: mid }],
         bullet_point: (product.bulletPoints.length ? product.bulletPoints : [product.description]).map(bp => ({
             value: bp, language_tag: lang, marketplace_id: mid
@@ -587,7 +586,7 @@ function buildListingPayload(product, images = []) {
     attributes.unit_count= [{
     value: 200,
     type: {
-        value: "grams",
+        value: "Granules",
         language_tag: lang,
     },
     marketplace_id: mid}];
