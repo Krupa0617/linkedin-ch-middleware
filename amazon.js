@@ -825,9 +825,9 @@ function buildListingPayload(product, images = []) {
         marketplace_id: MARKETPLACE_ID
       }
     ],
-        external_product_identifier: [
+        externally_assigned_product_identifier: [
       {
-        value: "8901234567890",
+        id: "8901234567890",
         type: "ean",
         marketplace_id: MARKETPLACE_ID
       }
