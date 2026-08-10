@@ -838,13 +838,6 @@ function buildListingPayload(product, images = []) {
         marketplace_id: MARKETPLACE_ID
       }
     ],
-        "item_height": [
-      {
-        "value": 1,
-        "unit": "centimeters",
-        "marketplace_id": MARKETPLACE_ID
-      }
-    ],
         item_weight: [
       {
         value: 200,
