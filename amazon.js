@@ -584,11 +584,7 @@ function buildListingPayload(product, images = []) {
             }];
         }
 
-    attributes.unit_count= [{
-    value: 1,
-    type: "quantity",
-    language_tag: lang,
-    marketplace_id: mid}];
+    attributes.unit_count= ["200 grams"];
 
     const d = product.dimensionsCm;
     attributes.item_dimensions = [{
