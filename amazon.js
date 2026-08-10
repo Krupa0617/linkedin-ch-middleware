@@ -413,7 +413,7 @@ async function getProductEntity(productId, contentHubBaseUrl, token) {
         containsLiquidContents: props.ContainsLiquidContents ?? false,
 
         // Physical attributes
-        unitCountValue: props.UnitCountValue || props.NetContentValue || null,
+        unitCountValue: props.UnitCountValue || props.NetContentValue || 1,
         weightGrams: props.WeightGrams || props.NetWeightGrams || null,
         packageWeightGrams: props.PackageWeightGrams || null,
         dimensionsCm: {
@@ -487,7 +487,10 @@ function buildListingPayload(product, images = []) {
         manufacturer: [{ value: product.manufacturer, language_tag: lang, marketplace_id: mid }],
         model_number: [{ value: product.sku, language_tag: lang, marketplace_id: mid }],
         part_number: [{ value: product.sku, language_tag: lang, marketplace_id: mid }],
-
+        product_expiration_type: [  { value: "None", language_tag: lang,marketplace_id: MARKETPLACE_ID }],
+       external_product_information: [  {    value: product.gtin || "N/A",    type: product.gtinType || "EAN",
+    language_tag: lang,marketplace_id: MARKETPLACE_ID
+  }],
         product_description: [{ value: product.description, language_tag: lang, marketplace_id: mid }],
         bullet_point: (product.bulletPoints.length ? product.bulletPoints : [product.description]).map(bp => ({
             value: bp, language_tag: lang, marketplace_id: mid
@@ -584,6 +587,7 @@ function buildListingPayload(product, images = []) {
         language_tag: lang,
         marketplace_id: mid
     }];
+    
 
     const d = product.dimensionsCm;
     attributes.item_dimensions = [{
