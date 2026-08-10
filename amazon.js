@@ -746,6 +746,7 @@ async function getProductEntity(productId, contentHubBaseUrl, token) {
         definitionName,
         sku: props.SKU || props.ProductSKU || entity.identifier,
         title: props.Title || props.ProductName || "",
+        productType:props.ProductType,
         description: props.Description || props.LongDescription || "",
         bulletPoints: [
             props.BulletPoint1,
@@ -762,26 +763,111 @@ async function getProductEntity(productId, contentHubBaseUrl, token) {
 }
 
 function buildListingPayload(product, images = []) {
-    const productType = getProductType(product.category);
+    const productType = product.productType;
 
     const attributes = {
-        item_name: [{ value: product.title, marketplace_id: MARKETPLACE_ID }],
-        brand: [{ value: product.brand, marketplace_id: MARKETPLACE_ID }],
-        product_description: [{ value: product.description, marketplace_id: MARKETPLACE_ID }],
-        bullet_point: product.bulletPoints.map(bp => ({
-            value: bp,
-            marketplace_id: MARKETPLACE_ID
-        })),
+        item_name: [{ value: product.title,  language_tag: "en_IN", marketplace_id: MARKETPLACE_ID }],
+        brand: [{ value: "Himalaya", language_tag: "en_IN",marketplace_id: MARKETPLACE_ID }],
+          "model_number": [
+      {
+        "value": product.title,
+        "marketplace_id": MARKETPLACE_ID
+      }
+    ],
+        product_description: [{ value: product.description,  language_tag: "en_IN", marketplace_id: MARKETPLACE_ID }],
+         bullet_point: [
+      {
+        value: "Triple action lactation support",
+        language_tag: "en_IN",
+        marketplace_id: MARKETPLACE_ID
+      },
+      {
+        value: "Contains Shatavari, Shigru (Moringa oleifera) and Saffron",
+        language_tag: "en_IN",
+        marketplace_id:MARKETPLACE_ID
+      },
+      {
+        value: "200 g pack",
+        language_tag: "en_IN",
+        marketplace_id:MARKETPLACE_ID
+      },
+      {
+        value: "Elaichi flavor",
+        language_tag: "en_IN",
+        marketplace_id:MARKETPLACE_ID
+      }
+    ],
+          manufacturer: [
+      {
+        value: "Himalaya Wellness",
+        language_tag: "en_IN",
+        marketplace_id: MARKETPLACE_ID
+      }
+    ],
+        externally_assigned_product_identifier: [
+      {
+        value: "8901234567890",
+        type: "ean",
+        marketplace_id: MARKETPLACE_ID
+      }
+    ],
+    condition_type: [
+      {
+        value: "new_new",
+        marketplace_id: MARKETPLACE_ID
+      }
+    ],
+        item_weight: [
+      {
+        value: 200,
+        unit: "GR",
+        marketplace_id: MARKETPLACE_ID
+      }
+    ],
+        color: [
+      {
+        value: "Elaichi Flavor",
+        language_tag: "en_IN",
+        marketplace_id: MARKETPLACE_ID
+      }
+    ],
         list_price: product.price ? [{
             value: Number(product.price),
-            currency: MARKETPLACE.currency,
+            currency: "INR",
             marketplace_id: MARKETPLACE_ID
         }] : undefined,
         fulfillment_availability: [{
             fulfillment_channel_code: "DEFAULT",
-            quantity: product.quantity,
+            quantity: 10,
             marketplace_id: MARKETPLACE_ID
-        }]
+        }],
+         generic_keyword: [
+      {
+        value: "galactosure lactation support shatavari moringa saffron elaichi",
+        language_tag: "en_IN",
+        marketplace_id: MARKETPLACE_ID
+      }
+    ],
+    ingredients: [
+      {
+        value: "Shatavari (Asparagus racemosus), Shigru (Moringa oleifera), Saffron (Crocus sativus)",
+        language_tag: "en_IN",
+        marketplace_id:MARKETPLACE_ID
+      }
+    ],
+    directions: [
+      {
+        value: "2 scoops (10 g) twice daily with one glass of milk, or as directed by the physician.",
+        language_tag: "en_IN",
+        marketplace_id: MARKETPLACE_ID
+      }
+    ],
+        country_of_origin: [
+      {
+        value: "IN",
+        marketplace_id: MARKETPLACE_ID
+      }
+    ],
     };
 
     images.forEach((img, index) => {
