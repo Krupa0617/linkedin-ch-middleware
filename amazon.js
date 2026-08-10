@@ -286,7 +286,7 @@ if (missing.length > 0) {
 }
 
 /***********************************************************************
- * MARKETPLACE_IDDLEWARE: Verify API Key
+ * MIDDLEWARE: Verify API Key
  ***********************************************************************/
 
 function verifyApiKey(req, res, next) {
@@ -766,333 +766,170 @@ function buildListingPayload(product, images = []) {
     const productType = "NUTRITIONAL_SUPPLEMENT";
 
     const attributes = {
-        // =====================================================
-    // PRODUCT IDENTITY
-    // =====================================================
-
-    item_name: [
-      {
-        value: product.title,
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    brand: [
-      {
-        value: "Himalaya",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    manufacturer: [
-      {
-        value: "Himalaya Wellness Company",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    model_number: [
-      {
-        value: "GALACTOSURE-200G",
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    // IMPORTANT:
-    // Add this only after confirming the exact schema structure
-    // and using the real EAN/UPC.
-    //
-    // externally_assigned_product_identifier: [
-    //   {
-    //     value: product.ean,
-    //     type: "EAN",
-    //     marketplace_id: MARKETPLACE_ID
-    //   }
-    // ],
-
-    // Only use if Amazon confirms this product already exists
-    // under this ASIN.
-    //
-    // merchant_suggested_asin: [
-    //   {
-    //     value: product.asin,
-    //     marketplace_id: MARKETPLACE_ID
-    //   }
-    // ],
-
-
-    // =====================================================
-    // PRODUCT DETAILS
-    // =====================================================
-
-    product_description: [
-      {
-        value:
-          "Himalaya Galactosure is a lactation supplement containing Shatavari, Moringa and Saffron.",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    bullet_point: [
-      {
-        value: "Triple action lactation support with Shatavari and Saffron",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      },
-      {
-        value: "Contains Shatavari, Moringa (Shigru), and Saffron",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      },
-      {
-        value: "200 g pack with Elaichi flavour",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    generic_keyword: [
-      {
-        value:
-          "galactosure lactation shatavari moringa saffron",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    flavor: [
-      {
-        value: "Elaichi",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    item_form: [
-      {
-        value: "Granules",
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    number_of_items: [
-      {
-        value: 1,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    item_package_quantity: [
-      {
-        value: 1,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    part_number: [
-      {
-        value: "GALACTOSURE-200G",
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    ingredients: [
-      {
-        value:
-          "Shatavari (Asparagus racemosus), Shigru (Moringa oleifera), Saffron (Crocus sativus)",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    special_ingredients: [
-      {
-        value:
-          "Shatavari, Shigru (Moringa oleifera), Saffron",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    serving_recommendation: [
-      {
-        value:
-          "2 scoops (10 g) twice daily with one glass of milk, or as directed on the product packaging.",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    item_type_name: [
-      {
-        value: "Lactation Supplement",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    contains_food_or_beverage: [
-      {
-        value: false,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    is_heat_sensitive: [
-      {
-        value: false,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    is_expiration_dated_product: [
-      {
-        value: true,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    fssai_veg_non_veg_status: [
-      {
-        value: "VEGETARIAN",
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    packer_contact_information: [
-      {
-        value:
-          "Himalaya Wellness Company, Makali, Bengaluru - 562162, Karnataka, India",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    rtip_manufacturer_contact_information: [
-      {
-        value:
-          "Himalaya Wellness Company, Makali, Bengaluru - 562162, Karnataka, India",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-
-    // =====================================================
-    // SAFETY / COMPLIANCE
-    // =====================================================
-
-    country_of_origin: [
-      {
-        value: "IN",
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    contains_liquid_contents: [
-      {
-        value: false,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-
-    // =====================================================
-    // SHIPPING
-    // =====================================================
-
-    item_dimensions: [
-      {
-        height: {
-          value: 10,
-          unit: "CM"
-        },
-        length: {
-          value: 10,
-          unit: "CM"
-        },
-        width: {
-          value: 10,
-          unit: "CM"
-        },
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    item_package_dimensions: [
-      {
-        height: {
-          value: 15,
-          unit: "CM"
-        },
-        length: {
-          value: 10,
-          unit: "CM"
-        },
-        width: {
-          value: 10,
-          unit: "CM"
-        },
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-
-    // DO NOT use "grams" here.
-    // Exact unit enum must come from the schema.
-    //
-    // item_weight: [
-    //   {
-    //     value: 200,
-    //     unit: "<SCHEMA_VALUE>",
-    //     marketplace_id: MARKETPLACE_ID
-    //   }
-    // ],
-
-    // item_package_weight: [
-    //   {
-    //     value: 220,
-    //     unit: "<SCHEMA_VALUE>",
-    //     marketplace_id: MARKETPLACE_ID
-    //   }
-    // ],
-
-
-    // =====================================================
-    // UNIT COUNT
-    // =====================================================
-
-    // DO NOT use "count".
-    // Exact type must come from schema.
-    //
-    // unit_count: [
-    //   {
-    //     value: 200,
-    //     type: "<SCHEMA_VALUE>",
-    //     marketplace_id: MARKETPLACE_ID
-    //   }
-    // ],
-
-
-    // =====================================================
-    // OFFER
-    // =====================================================
-
+        item_name: [{ value: product.title,  language_tag: "en_IN", marketplace_id: MARKETPLACE_ID }],
+        brand: [{ value: "Himalaya", language_tag: "en_IN",marketplace_id: MARKETPLACE_ID }],
+        product_description: [{ value: product.description,  language_tag: "en_IN", marketplace_id: MARKETPLACE_ID }],
     condition_type: [
       {
         value: "new_new",
         marketplace_id: MARKETPLACE_ID
       }
     ],
-
-    fulfillment_availability: [
+       "manufacturer": [
       {
-        fulfillment_channel_code: "DEFAULT",
-        quantity: product.quantity ?? 10,
-        marketplace_id: MARKETPLACE_ID
+        "value": "Himalaya Wellness Company",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "item_type_name": [
+      {
+        "value": "Nutritional Supplement",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "bullet_point": [
+      {
+        "value": "Triple action lactation support",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      },
+      {
+        "value": "Contains Shatavari, Shigru (Moringa oleifera) and Saffron",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      },
+      {
+        "value": "Elaichi flavor",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      },
+      {
+        "value": "200 g pack",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "flavor": [
+      {
+        "value": "Elaichi",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "item_form": [
+      {
+        "value": "Granules",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "unit_count": [
+      {
+        "value": 1,
+        "type": "count",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "number_of_items": [
+      {
+        "value": 1,
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "item_weight": [
+      {
+        "value": 200,
+        "unit": "grams",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "package_weight": [
+      {
+        "value": 200,
+        "unit": "grams",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "material_composition": [
+      {
+        "value": "Shatavari (Asparagus racemosus), Shigru (Moringa oleifera), Saffron (Crocus sativus)",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "country_of_origin": [
+      {
+        "value": "IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "is_expirable": [
+      {
+        "value": true,
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "is_heat_sensitive": [
+      {
+        "value": false,
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "contains_liquid_contents": [
+      {
+        "value": false,
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "contains_food_or_beverage": [
+      {
+        "value": true,
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "part_number": [
+      {
+        "value": "GALACTOSURE",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "subject_keyword": [
+      {
+        "value": "lactation support",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      },
+      {
+        "value": "galactosure",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      },
+      {
+        "value": "shatavari",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "target_audience_keyword": [
+      {
+        "value": "Adults",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "supplier_declared_dg_hz_regulation": [
+      {
+        "value": "not_applicable",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "generic_keyword": [
+      {
+        "value": "galactosure lactation support shatavari shigru moringa saffron elaichi granules",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
       }
     ]
     };
