@@ -825,7 +825,7 @@ function buildListingPayload(product, images = []) {
         marketplace_id: MARKETPLACE_ID
       }
     ],
-        externally_assigned_product_identifier: [
+        external_product_identifier: [
       {
         value: "8901234567890",
         type: "ean",
@@ -944,11 +944,11 @@ function buildListingPayload(product, images = []) {
         "marketplace_id": MARKETPLACE_ID
       }
     ],
-    "manufacturer_contact_information": [
+          manufacturer_contact_information: [
       {
-        "value": "Himalaya Wellness Company, Makali, Bengaluru - 562162, Karnataka, India. Email: contactus@himalayawellness.com. Phone: 1-800-208-1930",
-        "language_tag": "en_IN",
-        "marketplace_id": MARKETPLACE_ID
+        "company_name": "Himalaya Wellness Company, Makali, Bengaluru - 562162, Karnataka, India",
+        "email": "contactus@himalayawellness.com",
+        "phone_number": "1-800-208-1930"
       }
     ],
     "packer_contact_information": [
