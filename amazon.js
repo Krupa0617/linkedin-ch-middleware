@@ -764,7 +764,7 @@ async function getProductEntity(productId, contentHubBaseUrl, token) {
 
 function buildListingPayload(product, images = []) {
     const productType = "NUTRITIONAL_SUPPLEMENT";
-
+const lang = "en_IN";
     const attributes = {
     // =====================================================
     // PRODUCT IDENTITY
