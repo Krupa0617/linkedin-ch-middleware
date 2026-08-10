@@ -405,10 +405,46 @@ function buildListingPayload(product, images = []) {
     const attributes = {
         // Tells Amazon which existing catalog product this offer is for —
         // required because there's no GTIN to match by.
-        merchant_suggested_asin: [
-            { value: "B0FQCL31HV", marketplace_id: MARKETPLACE_ID }
-        ],
+        item_name: [
+      {
+        value: product.title,
+        language_tag: lang,
+        marketplace_id: MARKETPLACE_ID
+      }
+    ],
+    brand: [
+      {
+        value: "Himalaya",
+        language_tag: lang,
+        marketplace_id: MARKETPLACE_ID
+      }
+    ],
+        // merchant_suggested_asin: [
+        //     { value: "B0FQCL31HV", marketplace_id: MARKETPLACE_ID }
+        // ],
+     manufacturer: [
+      {
+        value: "Himalaya Wellness Company",
+        language_tag: lang,
+        marketplace_id: MARKETPLACE_ID
+      }
+    ],
 
+    model_number: [
+      {
+        value: "GALACTOSURE-200G",
+		language_tag: lang,
+        marketplace_id: MARKETPLACE_ID
+      }
+    ],
+     product_description: [
+      {
+        value:
+          "Himalaya Galactosure is a lactation supplement containing Shatavari, Moringa and Saffron.",
+        language_tag: lang,
+        marketplace_id: MARKETPLACE_ID
+      }
+    ],
         condition_type: [
             { value: "new_new", marketplace_id: MARKETPLACE_ID }
         ],
