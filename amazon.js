@@ -768,19 +768,170 @@ function buildListingPayload(product, images = []) {
     const attributes = {
         item_name: [{ value: product.title,  language_tag: "en_IN", marketplace_id: MARKETPLACE_ID }],
         brand: [{ value: "Himalaya", language_tag: "en_IN",marketplace_id: MARKETPLACE_ID }],
-        description: [{ value: product.description,  language_tag: "en_IN", marketplace_id: MARKETPLACE_ID }],
+        product_description: [{ value: product.description,  language_tag: "en_IN", marketplace_id: MARKETPLACE_ID }],
     condition_type: [
       {
         value: "new_new",
         marketplace_id: MARKETPLACE_ID
       }
     ],
-        country_of_origin: [
+       "manufacturer": [
       {
-        value: "IN",
-        marketplace_id: MARKETPLACE_ID
+        "value": "Himalaya Wellness Company",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
       }
     ],
+    "item_type_name": [
+      {
+        "value": "Nutritional Supplement",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "bullet_point": [
+      {
+        "value": "Triple action lactation support",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      },
+      {
+        "value": "Contains Shatavari, Shigru (Moringa oleifera) and Saffron",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      },
+      {
+        "value": "Elaichi flavor",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      },
+      {
+        "value": "200 g pack",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "flavor": [
+      {
+        "value": "Elaichi",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "item_form": [
+      {
+        "value": "Granules",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "unit_count": [
+      {
+        "value": 1,
+        "type": "count",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "number_of_items": [
+      {
+        "value": 1,
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "item_weight": [
+      {
+        "value": 200,
+        "unit": "grams",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "package_weight": [
+      {
+        "value": 200,
+        "unit": "grams",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "material_composition": [
+      {
+        "value": "Shatavari (Asparagus racemosus), Shigru (Moringa oleifera), Saffron (Crocus sativus)",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "country_of_origin": [
+      {
+        "value": "IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "is_expirable": [
+      {
+        "value": true,
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "is_heat_sensitive": [
+      {
+        "value": false,
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "contains_liquid_contents": [
+      {
+        "value": false,
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "contains_food_or_beverage": [
+      {
+        "value": true,
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "part_number": [
+      {
+        "value": "GALACTOSURE",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "subject_keyword": [
+      {
+        "value": "lactation support",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      },
+      {
+        "value": "galactosure",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      },
+      {
+        "value": "shatavari",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "target_audience_keyword": [
+      {
+        "value": "Adults",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "supplier_declared_dg_hz_regulation": [
+      {
+        "value": "not_applicable",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ],
+    "generic_keyword": [
+      {
+        "value": "galactosure lactation support shatavari shigru moringa saffron elaichi granules",
+        "language_tag": "en_IN",
+        "marketplace_id": "A21TJRUUN4KGV"
+      }
+    ]
     };
 
     images.forEach((img, index) => {
