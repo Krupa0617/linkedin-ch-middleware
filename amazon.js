@@ -585,8 +585,8 @@ function buildListingPayload(product, images = []) {
         }
 
     attributes.unit_count= [{
-    value: 200,
-    type: "grams",
+    value: 1,
+    type: "quantity",
     language_tag: lang,
     marketplace_id: mid}];
 
