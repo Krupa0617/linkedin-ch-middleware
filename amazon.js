@@ -848,7 +848,7 @@ function buildListingPayload(product, images = []) {
         item_weight: [
       {
         value: 200,
-        unit: "GR",
+        unit: "GRAMS",
         marketplace_id: MARKETPLACE_ID
       }
     ],
