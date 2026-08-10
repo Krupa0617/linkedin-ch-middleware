@@ -374,15 +374,67 @@ async function getProductEntity(productId, contentHubBaseUrl, token) {
         id: entity.id,
         identifier: entity.identifier,
         definitionName,
-        sku: props.SKU || props.ProductSKU || entity.identifier,
+        sku: (props.SKU || props.ProductSKU || entity.identifier || "").toString().trim(),
+
+        // Core content
         title: props.Title || props.ProductName || "",
-        productType: props.ProductType,
         description: props.Description || props.LongDescription || "",
-        bulletPoints: [props.BulletPoint1, props.BulletPoint2, props.BulletPoint3, props.BulletPoint4, props.BulletPoint5].filter(Boolean),
-        brand: props.Brand || "",
+        bulletPoints: [
+            props.BulletPoint1, props.BulletPoint2, props.BulletPoint3,
+            props.BulletPoint4, props.BulletPoint5
+        ].filter(Boolean),
+        brand: props.Brand || "Himalaya",
+        manufacturer: props.Manufacturer || "Himalaya Wellness Company",
         category: props.Category || props.ProductCategory || "",
+
+        // Commerce
         price: props.Price || props.ListPrice || null,
-        quantity: props.Quantity ?? props.StockQuantity ?? 0
+        quantity: props.Quantity ?? props.StockQuantity ?? 0,
+
+        // Identifiers
+        gtin: props.GTIN || props.EAN || props.UPC || null,
+        gtinType: props.GTINType || "EAN",
+        // Only set this if THIS product is meant to attach to a known
+        // existing ASIN. Leave null for a genuinely new product.
+        suggestedAsin: props.SuggestedASIN || props.ExistingASIN || null,
+
+        // Nutritional-supplement-specific fields — map these to whatever
+        // Content Hub actually calls them, falling back to safe defaults.
+        flavor: props.Flavor || null,
+        itemForm: props.ItemForm || "Granules",
+        ingredients: props.Ingredients || "",
+        specialIngredients: props.SpecialIngredients || props.KeyIngredients || "",
+        servingRecommendation: props.ServingRecommendation || props.Directions || "",
+        vegStatus: props.VegStatus || props.DietaryPreference || "vegetarian", // "vegetarian" | "non_vegetarian"
+        isExpirationDated: props.IsExpirationDated ?? true,
+        shelfLifeMonths: props.ShelfLifeMonths || 24,
+        containsFoodOrBeverage: props.ContainsFoodOrBeverage ?? false,
+        isHeatSensitive: props.IsHeatSensitive ?? false,
+        containsLiquidContents: props.ContainsLiquidContents ?? false,
+
+        // Physical attributes
+        unitCountValue: props.UnitCountValue || props.NetContentValue || null,
+        weightGrams: props.WeightGrams || props.NetWeightGrams || null,
+        packageWeightGrams: props.PackageWeightGrams || null,
+        dimensionsCm: {
+            height: props.HeightCm || null,
+            length: props.LengthCm || null,
+            width: props.WidthCm || null
+        },
+        packageDimensionsCm: {
+            height: props.PackageHeightCm || null,
+            length: props.PackageLengthCm || null,
+            width: props.PackageWidthCm || null
+        },
+
+        // Compliance/contact
+        countryOfOrigin: props.CountryOfOrigin || "IN",
+        manufacturerContactInfo: props.ManufacturerContactInfo ||
+            "Himalaya Wellness Company, Makali, Bengaluru - 562162, Karnataka, India",
+        packerContactInfo: props.PackerContactInfo || props.ManufacturerContactInfo ||
+            "Himalaya Wellness Company, Makali, Bengaluru - 562162, Karnataka, India",
+
+        genericKeywords: props.GenericKeywords || props.SearchKeywords || ""
     };
 }
 
@@ -400,106 +452,158 @@ async function getProductEntity(productId, contentHubBaseUrl, token) {
 
 function buildListingPayload(product, images = []) {
     const productType = "NUTRITIONAL_SUPPLEMENT";
-    const requirements = "LISTING_OFFER_ONLY";
+    const lang = "en_IN";
+    const mid = MARKETPLACE_ID;
+
+    // ── Attaching to a known existing ASIN — offer only ──────────────
+    if (product.suggestedAsin) {
+        const attributes = {
+            merchant_suggested_asin: [{ value: product.suggestedAsin, marketplace_id: mid }],
+            condition_type: [{ value: "new_new", marketplace_id: mid }],
+            fulfillment_availability: [{
+                fulfillment_channel_code: "DEFAULT",
+                quantity: product.quantity ?? 10,
+                marketplace_id: mid
+            }]
+        };
+        if (product.price) {
+            attributes.list_price = [{ value: Number(product.price), currency: "INR", marketplace_id: mid }];
+        }
+        images.forEach((img, index) => {
+            const key = index === 0 ? "main_offer_image_locator" : `other_offer_image_locator_${index}`;
+            attributes[key] = [{ media_location: img.imageUrl, marketplace_id: mid }];
+        });
+        return { productType, requirements: "LISTING_OFFER_ONLY", attributes };
+    }
+
+    // ── Genuinely new product — full catalog creation ────────────────
+    if (!product.sku) throw new Error("Product is missing a SKU.");
+    if (!product.title) throw new Error("Product is missing a title.");
 
     const attributes = {
-        // Tells Amazon which existing catalog product this offer is for —
-        // required because there's no GTIN to match by.
-        item_name: [
-      {
-        value: product.title,
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-    brand: [
-      {
-        value: "Himalaya",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-        // merchant_suggested_asin: [
-        //     { value: "B0FQCL31HV", marketplace_id: MARKETPLACE_ID }
-        // ],
-     manufacturer: [
-      {
-        value: "Himalaya Wellness Company",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
+        item_name: [{ value: product.title, language_tag: lang, marketplace_id: mid }],
+        brand: [{ value: product.brand, language_tag: lang, marketplace_id: mid }],
+        manufacturer: [{ value: product.manufacturer, language_tag: lang, marketplace_id: mid }],
+        model_number: [{ value: product.sku, language_tag: lang, marketplace_id: mid }],
+        part_number: [{ value: product.sku, language_tag: lang, marketplace_id: mid }],
 
-    model_number: [
-      {
-        value: "GALACTOSURE-200G",
-		language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-     product_description: [
-      {
-        value:
-          "Himalaya Galactosure is a lactation supplement containing Shatavari, Moringa and Saffron.",
-        language_tag: lang,
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-        condition_type: [
-            { value: "new_new", marketplace_id: MARKETPLACE_ID }
-        ],
+        product_description: [{ value: product.description, language_tag: lang, marketplace_id: mid }],
+        bullet_point: (product.bulletPoints.length ? product.bulletPoints : [product.description]).map(bp => ({
+            value: bp, language_tag: lang, marketplace_id: mid
+        })),
+        generic_keyword: product.genericKeywords
+            ? [{ value: product.genericKeywords, language_tag: lang, marketplace_id: mid }]
+            : undefined,
 
+        item_type_name: [{ value: product.category || "Nutritional Supplement", language_tag: lang, marketplace_id: mid }],
+        item_form: [{ value: product.itemForm, language_tag: lang, marketplace_id: mid }],
+        flavor: product.flavor ? [{ value: product.flavor, language_tag: lang, marketplace_id: mid }] : undefined,
+
+        number_of_items: [{ value: 1, marketplace_id: mid }],
+        item_package_quantity: [{ value: 1, marketplace_id: mid }],
+
+        ingredients: product.ingredients
+            ? [{ value: product.ingredients, language_tag: lang, marketplace_id: mid }] : undefined,
+        special_ingredients: product.specialIngredients
+            ? [{ value: product.specialIngredients, language_tag: lang, marketplace_id: mid }] : undefined,
+        serving_recommendation: product.servingRecommendation
+            ? [{ value: product.servingRecommendation, language_tag: lang, marketplace_id: mid }] : undefined,
+
+        contains_food_or_beverage: [{ value: !!product.containsFoodOrBeverage, marketplace_id: mid }],
+        is_heat_sensitive: [{ value: !!product.isHeatSensitive, marketplace_id: mid }],
+        is_expiration_dated_product: [{ value: !!product.isExpirationDated, marketplace_id: mid }],
+        product_expiration_type: [{ value: "expiration_dated", marketplace_id: mid }], // verify enum via schema
+        fssai_veg_non_veg_status: [{ value: product.vegStatus, marketplace_id: mid }], // verify enum via schema
+        fc_shelf_life: [{ value: product.shelfLifeMonths, unit: "months", marketplace_id: mid }], // verify unit enum
+
+        packer_contact_information: [{ value: product.packerContactInfo, language_tag: lang, marketplace_id: mid }],
+        rtip_manufacturer_contact_information: [{ value: product.manufacturerContactInfo, language_tag: lang, marketplace_id: mid }],
+
+        country_of_origin: [{ value: product.countryOfOrigin, marketplace_id: mid }],
+        contains_liquid_contents: [{ value: !!product.containsLiquidContents, marketplace_id: mid }],
+
+        condition_type: [{ value: "new_new", marketplace_id: mid }],
         fulfillment_availability: [{
             fulfillment_channel_code: "DEFAULT",
             quantity: product.quantity ?? 10,
-            marketplace_id: MARKETPLACE_ID
+            marketplace_id: mid
         }]
     };
 
+    // Identifiers — GTIN if present, otherwise exemption flag.
+    if (product.gtin) {
+        attributes.externally_assigned_product_identifier = [
+            { value: product.gtin, type: product.gtinType, marketplace_id: mid }
+        ];
+    } else {
+        attributes.supplier_declared_has_product_identifier_exemption = [{ value: true, marketplace_id: mid }];
+        log(`⚠️ No GTIN for SKU ${product.sku} — declaring identifier exemption. Confirm this is actually approved for this brand/category.`);
+    }
+
     if (product.price) {
-        attributes.list_price = [{
-            value: Number(product.price),
-            currency: "INR",
-            marketplace_id: MARKETPLACE_ID
+        attributes.list_price = [{ value: Number(product.price), currency: "INR", marketplace_id: mid }];
+    }
+
+    // Physical dimensions — only include if Content Hub actually has them,
+    // otherwise Amazon will reject with placeholder/fake values anyway.
+    if (product.weightGrams) {
+        attributes.item_weight = [{ value: product.weightGrams, unit: "grams", marketplace_id: mid }];
+    }
+    if (product.packageWeightGrams) {
+        attributes.item_package_weight = [{ value: product.packageWeightGrams, unit: "grams", marketplace_id: mid }];
+    }
+    if (product.unitCountValue) {
+        attributes.unit_count = [{ value: product.unitCountValue, type: "grams", marketplace_id: mid }]; // verify "type" enum
+    }
+    const d = product.dimensionsCm;
+    if (d.height && d.length && d.width) {
+        attributes.item_dimensions = [{
+            height: { value: d.height, unit: "centimeters" },
+            length: { value: d.length, unit: "centimeters" },
+            width: { value: d.width, unit: "centimeters" },
+            marketplace_id: mid
+        }];
+    }
+    const pd = product.packageDimensionsCm;
+    if (pd.height && pd.length && pd.width) {
+        attributes.item_package_dimensions = [{
+            height: { value: pd.height, unit: "centimeters" },
+            length: { value: pd.length, unit: "centimeters" },
+            width: { value: pd.width, unit: "centimeters" },
+            marketplace_id: mid
         }];
     }
 
-    // Offer images are optional in offer-only mode.
     images.forEach((img, index) => {
-        const key = index === 0 ? "main_offer_image_locator" : `other_offer_image_locator_${index}`;
-        attributes[key] = [{ media_location: img.imageUrl, marketplace_id: MARKETPLACE_ID }];
+        const key = index === 0 ? "main_product_image_locator" : `other_product_image_locator_${index}`;
+        attributes[key] = [{ media_location: img.imageUrl, marketplace_id: mid }];
     });
 
     Object.keys(attributes).forEach(key => {
         if (attributes[key] === undefined) delete attributes[key];
     });
 
-    return { productType, requirements, attributes };
+    return { productType, requirements: "LISTING", attributes };
 }
 
 async function pushListingToAmazon(sku, payload) {
     const path = `/listings/${AMAZON_API_VERSION.LISTINGS}/items/${AMAZON_SELLER_ID}/${encodeURIComponent(sku)}`;
 
-    log(`Pushing OFFER-ONLY listing to Amazon: ${sku}`);
+    log(`Pushing listing to Amazon: ${sku} (requirements: ${payload.requirements})`);
 
     const result = await callAmazonAPI({
         method: "put",
         path,
-        params: {
-            marketplaceIds: MARKETPLACE_ID,
-            issueLocale: "en_IN"
-        },
+        params: { marketplaceIds: MARKETPLACE_ID, issueLocale: "en_IN" },
         data: {
             productType: payload.productType,
-            requirements: payload.requirements, // <-- key fix
+            requirements: payload.requirements,
             attributes: payload.attributes
         }
     });
 
     log("Amazon listing response", result);
-    if (result?.issues?.length) {
-        log(`⚠️ ${result.issues.length} issue(s) for ${sku}`, result.issues);
-    }
+    if (result?.issues?.length) log(`⚠️ ${result.issues.length} issue(s) for ${sku}`, result.issues);
     return result;
 }
 
