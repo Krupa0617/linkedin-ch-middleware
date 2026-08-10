@@ -489,7 +489,7 @@ function buildListingPayload(product, images = []) {
         part_number: [{ value: product.sku, language_tag: lang, marketplace_id: mid }],
        // product_expiration_type: [  { value: "None", language_tag: lang,marketplace_id: MARKETPLACE_ID }],
        external_product_information: [  {
-    value: product.gtin || "N/A",
+    value: "B0FQCL31HV",
     type: product.gtinType || "EAN",
     language_tag: lang,
     marketplace_id: MARKETPLACE_ID
