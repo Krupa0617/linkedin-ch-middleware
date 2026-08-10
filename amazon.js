@@ -768,25 +768,13 @@ function buildListingPayload(product, images = []) {
     const attributes = {
         item_name: [{ value: product.title,  language_tag: "en_IN", marketplace_id: MARKETPLACE_ID }],
         brand: [{ value: "Himalaya", language_tag: "en_IN",marketplace_id: MARKETPLACE_ID }],
-         item_type_name: [
-      {
-        value: product.productType,
-        language_tag: "en_IN",
-        marketplace_id: MARKETPLACE_ID
-      }
-    ],
-        product_description: [{ value: product.description,  language_tag: "en_IN", marketplace_id: MARKETPLACE_ID }],
+        description: [{ value: product.description,  language_tag: "en_IN", marketplace_id: MARKETPLACE_ID }],
     condition_type: [
       {
         value: "new_new",
         marketplace_id: MARKETPLACE_ID
       }
     ],
-        fulfillment_availability: [{
-            fulfillment_channel_code: "DEFAULT",
-            quantity: 10,
-            marketplace_id: MARKETPLACE_ID
-        }],
         country_of_origin: [
       {
         value: "IN",
