@@ -92,7 +92,7 @@ const MARKETPLACES = {
 
     IN: {
 
-        id: AMAZON_MARKETPLACE_ID || "A21TJRUUN4KGV",
+        id: AMAZON_MARKETPLACE_ID || MARKETPLACE_ID,
 
         endpoint: AMAZON_ENDPOINTS.EU,
 
@@ -774,6 +774,27 @@ function buildListingPayload(product, images = []) {
         "marketplace_id": MARKETPLACE_ID
       }
     ],
+         item_type_name: [
+      {
+        value: product.productType,
+        language_tag: "en_IN",
+        marketplace_id: MARKETPLACE_ID
+      }
+    ],
+        manufacturer_minimum_age: [
+      {
+        value: 0,
+        unit: "months",
+        marketplace_id: MARKETPLACE_ID
+      }
+    ],
+    manufacturer_maximum_age: [
+      {
+        value: 999,
+        unit: "months",
+        marketplace_id: MARKETPLACE_ID
+      }
+    ],
         product_description: [{ value: product.description,  language_tag: "en_IN", marketplace_id: MARKETPLACE_ID }],
          bullet_point: [
       {
@@ -815,6 +836,13 @@ function buildListingPayload(product, images = []) {
       {
         value: "new_new",
         marketplace_id: MARKETPLACE_ID
+      }
+    ],
+        "item_height": [
+      {
+        "value": 1,
+        "unit": "centimeters",
+        "marketplace_id": MARKETPLACE_ID
       }
     ],
         item_weight: [
@@ -866,6 +894,75 @@ function buildListingPayload(product, images = []) {
       {
         value: "IN",
         marketplace_id: MARKETPLACE_ID
+      }
+    ],
+         "material_composition": [
+      {
+        "value": "Shatavari (Asparagus racemosus), Shigru (Moringa oleifera), Saffron (Crocus sativus)",
+        "language_tag": "en_IN",
+        "marketplace_id": MARKETPLACE_ID
+      }
+    ],
+    "unit_count": [
+      {
+        "value": 200,
+        "unit": "gram",
+        "marketplace_id": MARKETPLACE_ID
+      }
+    ],
+    "is_heat_sensitive": [
+      {
+        "value": false,
+        "marketplace_id": MARKETPLACE_ID
+      }
+    ],
+    "supplier_declared_dg_hz_regulation": [
+      {
+        "value": "not_applicable",
+        "marketplace_id": MARKETPLACE_ID
+      }
+    ],
+         "subject_keyword": [
+      {
+        "value": "lactation support",
+        "language_tag": "en_IN",
+        "marketplace_id": MARKETPLACE_ID
+      },
+      {
+        "value": "galactosure",
+        "language_tag": "en_IN",
+        "marketplace_id": MARKETPLACE_ID
+      },
+      {
+        "value": "shatavari",
+        "language_tag": "en_IN",
+        "marketplace_id": MARKETPLACE_ID
+      }
+    ],
+    "target_audience_keyword": [
+      {
+        "value": "Women",
+        "language_tag": "en_IN",
+        "marketplace_id": MARKETPLACE_ID
+      },
+      {
+        "value": "Adults",
+        "language_tag": "en_IN",
+        "marketplace_id": MARKETPLACE_ID
+      }
+    ],
+    "manufacturer_contact_information": [
+      {
+        "value": "Himalaya Wellness Company, Makali, Bengaluru - 562162, Karnataka, India. Email: contactus@himalayawellness.com. Phone: 1-800-208-1930",
+        "language_tag": "en_IN",
+        "marketplace_id": MARKETPLACE_ID
+      }
+    ],
+    "packer_contact_information": [
+      {
+        "value": "Himalaya Wellness Company, Makali, Bengaluru - 562162, Karnataka, India",
+        "language_tag": "en_IN",
+        "marketplace_id": MARKETPLACE_ID
       }
     ],
     };
