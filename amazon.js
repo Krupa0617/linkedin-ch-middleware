@@ -493,10 +493,10 @@ function buildListingPayload(product, images = []) {
             entity: "HSN",
             marketplace_id: MARKETPLACE_ID
         }],
-        product_description: [{ value: product.description, language_tag: lang, marketplace_id: mid }],
-        bullet_point: (product.bulletPoints.length ? product.bulletPoints : [product.description]).map(bp => ({
-            value: bp, language_tag: lang, marketplace_id: mid
-        })),
+        product_description: [{ description: product.description, language_tag: lang, marketplace_id: mid }],
+        // bullet_point: (product.bulletPoints.length ? product.bulletPoints : [product.description]).map(bp => ({
+        //     value: bp, language_tag: lang, marketplace_id: mid
+        // })),
         generic_keyword: product.genericKeywords
             ? [{ value: product.genericKeywords, language_tag: lang, marketplace_id: mid }]
             : undefined,
