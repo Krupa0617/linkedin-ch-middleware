@@ -378,9 +378,10 @@ async function getProductEntity(productId, contentHubBaseUrl, token) {
 
         // Core content
         title: props.Title || props.ProductName || "",
-        description: props.Description || props.ProductShortDescription || "",
+        description: props.Description || props.ProductLongDescription || "",
         bulletPoints: [
-            props.ProductLongDescription
+            props.BulletPoint1, props.BulletPoint2, props.BulletPoint3,
+            props.BulletPoint4, props.BulletPoint5
         ].filter(Boolean),
         brand: props.Brand || "Himalaya",
         manufacturer: props.Manufacturer || "Himalaya Wellness Company",
@@ -489,7 +490,7 @@ function buildListingPayload(product, images = []) {
        // product_expiration_type: [  { value: "None", language_tag: lang,marketplace_id: MARKETPLACE_ID }],
         external_product_information: [{
             value: Math.floor(Math.log10(product.id)) + 1 < 6 ? Number("0" + product.id) : product.id,
-            entity: "HSN Code",
+            entity: "HSN",
             marketplace_id: MARKETPLACE_ID
         }],
         product_description: [{ value: product.description, language_tag: lang, marketplace_id: mid }],
