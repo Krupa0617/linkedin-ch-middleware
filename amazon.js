@@ -378,7 +378,7 @@ async function getProductEntity(productId, contentHubBaseUrl, token) {
 
         // Core content
         title: props.Title || props.ProductName || "",
-        description: props.Description || props.longDescription || "",
+        description: props.Description || props.ProductShortDescription || "",
         bulletPoints: [
             props.BulletPoint1, props.BulletPoint2, props.BulletPoint3,
             props.BulletPoint4, props.BulletPoint5
@@ -493,7 +493,7 @@ function buildListingPayload(product, images = []) {
             entity: "HSN",
             marketplace_id: MARKETPLACE_ID
         }],
-        product_description: [{ value: "This is test description for product", language_tag: lang, marketplace_id: mid }],
+        product_description: [{ value: product.description[lang], language_tag: lang, marketplace_id: mid }],
         bullet_point: (product.bulletPoints.length ? product.bulletPoints : [product.description]).map(bp => ({
             value: bp, language_tag: lang, marketplace_id: mid
         })),
