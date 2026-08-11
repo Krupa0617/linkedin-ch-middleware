@@ -493,7 +493,7 @@ function buildListingPayload(product, images = []) {
             entity: "HSN",
             marketplace_id: MARKETPLACE_ID
         }],
-        product_description: [{ value: product.description[lang], language_tag: lang, marketplace_id: mid }],
+        product_description: [{ value: product.description["en-US"], language_tag: lang, marketplace_id: mid }],
         bullet_point: (product.bulletPoints.length ? product.bulletPoints : [product.description]).map(bp => ({
             value: bp, language_tag: lang, marketplace_id: mid
         })),
