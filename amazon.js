@@ -494,7 +494,7 @@ function buildListingPayload(product, images = []) {
             marketplace_id: MARKETPLACE_ID
         }],
         product_description: [{ value: product.description["en-US"], language_tag: lang, marketplace_id: mid }],
-        bullet_point: (product.bulletPoints.length ? product.bulletPoints : [product.description]).map(bp => ({
+        bullet_point: (product.bulletPoints.length ? product.bulletPoints : [product.description["en-US"]]).map(bp => ({
             value: bp, language_tag: lang, marketplace_id: mid
         })),
         generic_keyword: product.genericKeywords
