@@ -490,7 +490,7 @@ function buildListingPayload(product, images = []) {
        // product_expiration_type: [  { value: "None", language_tag: lang,marketplace_id: MARKETPLACE_ID }],
         external_product_information: [{
             value: Math.floor(Math.log10(product.id)) + 1 < 6 ? Number("0" + product.id) : product.id,
-            entity: "HSN",
+            entity: "HSN Code",
             marketplace_id: MARKETPLACE_ID
         }],
         product_description: [{ value: product.description, language_tag: lang, marketplace_id: mid }],
@@ -624,7 +624,7 @@ function buildListingPayload(product, images = []) {
     Object.keys(attributes).forEach(key => {
         if (attributes[key] === undefined) delete attributes[key];
     });
-
+    console.log("Final Listing Payload:", { attributes });
     return { productType, requirements: "LISTING", attributes };
 }
 
