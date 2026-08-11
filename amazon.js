@@ -490,7 +490,7 @@ function buildListingPayload(product, images = []) {
        // product_expiration_type: [  { value: "None", language_tag: lang,marketplace_id: MARKETPLACE_ID }],
         external_product_information: [{
             value: Math.floor(Math.log10(product.id)) + 1 < 6 ? Number("0" + product.id) : product.id,
-            entity: "HSN",
+            entity: "HSN Code",
             marketplace_id: MARKETPLACE_ID
         }],
         product_description: [{ value: product.description["en-US"], language_tag: lang, marketplace_id: mid }],
@@ -520,7 +520,7 @@ function buildListingPayload(product, images = []) {
         is_expiration_dated_product: [{ value: false, language_tag: lang, marketplace_id: mid }],
         // product_expiration_type intentionally omitted — see note below.
         fssai_veg_non_veg_status: [{ value: product.vegStatus, language_tag: lang,marketplace_id: mid }], // this one stopped erroring, likely correct now
-        fc_shelf_life: [{ value: product.shelfLifeMonths, unit: "months", language_tag: lang,marketplace_id: mid }], // verify unit enum
+        fc_shelf_life: [{ value: product.shelfLifeMonths, unit: "days", language_tag: lang,marketplace_id: mid }], // verify unit enum
 
         packer_contact_information: [{ value: product.packerContactInfo, language_tag: lang, marketplace_id: mid }],
         rtip_manufacturer_contact_information: [{ value: product.manufacturerContactInfo, language_tag: lang, marketplace_id: mid }],
@@ -584,7 +584,7 @@ function buildListingPayload(product, images = []) {
         }
 
     attributes.unit_count= [{
-    value: 400,
+    value: 200,
     type: {
         value: "gram",
         language_tag: lang,
