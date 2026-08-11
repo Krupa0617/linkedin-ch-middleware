@@ -378,7 +378,7 @@ async function getProductEntity(productId, contentHubBaseUrl, token) {
 
         // Core content
         title: props.Title || props.ProductName || "",
-        description: props.Description || props.ProductShortDescription || "",
+        description: props.Description || props.longDescription || "",
         bulletPoints: [
             props.BulletPoint1, props.BulletPoint2, props.BulletPoint3,
             props.BulletPoint4, props.BulletPoint5
@@ -493,7 +493,7 @@ function buildListingPayload(product, images = []) {
             entity: "HSN",
             marketplace_id: MARKETPLACE_ID
         }],
-        product_description: [{ description: product.description, language_tag: lang, marketplace_id: mid }],
+        product_description: [{ value: product.description, language_tag: lang, marketplace_id: mid }],
         // bullet_point: (product.bulletPoints.length ? product.bulletPoints : [product.description]).map(bp => ({
         //     value: bp, language_tag: lang, marketplace_id: mid
         // })),
@@ -584,7 +584,7 @@ function buildListingPayload(product, images = []) {
         }
 
     attributes.unit_count= [{
-    value: 200,
+    value: 400,
     type: {
         value: "gram",
         language_tag: lang,
