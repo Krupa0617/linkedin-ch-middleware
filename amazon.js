@@ -490,7 +490,7 @@ function buildListingPayload(product, images = []) {
        // product_expiration_type: [  { value: "None", language_tag: lang,marketplace_id: MARKETPLACE_ID }],
         external_product_information: [{
             value: Math.floor(Math.log10(product.id)) + 1 < 6 ? "0" + product.id : product.id,
-            entity: "HSN Code",
+            entity: "HSN",
             marketplace_id: MARKETPLACE_ID
         }],
         product_description: [{ value: product.description["en-US"], language_tag: lang, marketplace_id: mid }],
