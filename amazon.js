@@ -378,10 +378,9 @@ async function getProductEntity(productId, contentHubBaseUrl, token) {
 
         // Core content
         title: props.Title || props.ProductName || "",
-        description: props.Description || props.LongDescription || "",
+        description: props.Description || props.ProductShortDescription || "",
         bulletPoints: [
-            props.BulletPoint1, props.BulletPoint2, props.BulletPoint3,
-            props.BulletPoint4, props.BulletPoint5
+            props.ProductLongDescription
         ].filter(Boolean),
         brand: props.Brand || "Himalaya",
         manufacturer: props.Manufacturer || "Himalaya Wellness Company",
